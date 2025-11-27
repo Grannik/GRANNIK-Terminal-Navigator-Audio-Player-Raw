@@ -20,6 +20,9 @@
 #include <libgen.h>
 #include <time.h>
 
+/* Прототипы — чтобы не было ошибок компиляции */
+void draw_file_list(WINDOW *win); // Рисует список файлов и всю нижнюю панель
+
 #define SCROLL_FILLED L'█'  // Заполненный блок
 #define SCROLL_EMPTY L'▒'   // Фон бара
 #define COLOR_PAIR_BORDER 1
@@ -42,7 +45,6 @@ typedef struct {
     char *name;
     int is_dir;
 } FileEntry;
-
 // === Глобальное состояние UI ===
 FileEntry *file_list = NULL;
 int file_count = 0;
@@ -51,6 +53,14 @@ char current_dir[PATH_MAX];
 char root_dir[PATH_MAX] = {0};
 WINDOW *list_win = NULL;
 int term_height, term_width;
+// Полное обновление экрана (заменяет 4 строки с draw_file_list + refresh)
+static inline void refresh_ui(void)
+{
+    draw_file_list(list_win);
+    wnoutrefresh(stdscr);
+    wnoutrefresh(list_win);
+    doupdate();
+}
 char **forward_history = NULL;
 int forward_count = 0;
 int forward_capacity = 10;
@@ -188,10 +198,10 @@ snd_pcm_t* init_audio_device(unsigned int rate, int channels) {
 // Внешняя рамка с ACS (терминал-независимая)
 void draw_outer_frame(WINDOW *win, int rows, int cols, int headers_only) {
     const int FRAME_WIDTH = 84;      // фиксированная ширина — как у внутренних рамок + 2
-    // Если терминал уже 84 символов — ничего не рисуем (или рисуем обрезанную версию)
-    if (cols < FRAME_WIDTH) {
-        return;  // или можно нарисовать урезанную, но пока просто пропускаем
+    if (cols < MIN_WIDTH) {
+        return;  // Terminal too narrow for any frame
     }
+//
     wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
     if (headers_only) {
         wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
@@ -486,30 +496,24 @@ static int is_raw_file(const char *name) {
 
 int add_to_forward(const char *dir) {
     if (!dir) return -1;
-    // Realloc only if needed
+
     if (forward_count >= forward_capacity) {
         int new_capacity = forward_capacity == 0 ? 10 : forward_capacity * 2;
         char **temp = realloc(forward_history, new_capacity * sizeof(char *));
         if (!temp) {
-            // Leak prevention: free old array on realloc fail
-            for (int i = 0; i < forward_count; i++) {
-                if (forward_history[i]) free(forward_history[i]);
-            }
-            free(forward_history);
-            forward_history = NULL;
-            forward_capacity = 0;
             return -1;
         }
         forward_history = temp;
+        memset(forward_history + forward_count, 0,
+               (new_capacity - forward_count) * sizeof(char *));
         forward_capacity = new_capacity;
     }
-    // Assign new dir
     forward_history[forward_count] = strdup(dir);
     if (!forward_history[forward_count]) {
         return -1;
     }
     forward_count++;
-    return 0; // Success
+    return 0;
 }
 //
 void clear_forward_history(void) {
@@ -616,7 +620,7 @@ void update_file_list(void) {
     if (file_count == 0) {
         file_list = calloc(1, sizeof(FileEntry));
         if (file_list) {
-            file_list[0].name = strdup("(empty or out of memory)");
+            file_list[0].name = strdup("Directory is empty or not enough memory.");
             file_list[0].is_dir = 0;
             file_count = 1;
         }
@@ -675,69 +679,113 @@ void draw_file_list(WINDOW *win) {
         end_index = start_index + visible_lines;
         if (end_index > file_count) end_index = file_count;
     }
-for (int i = start_index; i < end_index; i++) {
-    if (!file_list[i].name) continue;
-    int row = i - start_index + 4; // Верх списка файлов и директорий.
-    int cursor_end = 2 + CURSOR_WIDTH;
+// Специальная обработка пустого каталога
+	if (file_count == 1 && file_list[0].name &&
+	    strcmp(file_list[0].name, "Directory is empty or not enough memory.") == 0) {
+	    int msg_row = 4 + (visible_lines / 2);
+	    if (msg_row < 5) msg_row = 5;
+	    if (msg_row >= max_y - 5) msg_row = max_y - 6;
 
-		    wchar_t wname[CURSOR_WIDTH + 4] = {0};
-		    const char *src = file_list[i].name;
-		    mbstate_t state = {0};
-		    size_t wlen = mbsrtowcs(wname, &src, CURSOR_WIDTH, &state);
-
-		    if (wlen == (size_t)-1) {
-		        wname[0] = L'?';
-		        wname[1] = L'\0';
-		        wlen = 1;
-		    } else if (wlen >= CURSOR_WIDTH) {
-		        wname[CURSOR_WIDTH - 4] = L'.';
-		        wname[CURSOR_WIDTH - 3] = L'.';
-		        wname[CURSOR_WIDTH - 2] = L'.';
-		        wname[CURSOR_WIDTH - 1] = L'\0';
-		        wlen = CURSOR_WIDTH - 1;
-		    } else {
-		        wname[wlen] = L'\0';  // гарантируем нуль-терминатор
-		    }
-	    if (file_list[i].is_dir) {
-	        int dirlen = wcslen(wname);
-	        if (dirlen < CURSOR_WIDTH - 1) {
-	            wname[dirlen] = L'/';
-	            wname[dirlen + 1] = L'\0';
+wattron(win, COLOR_PAIR(COLOR_PAIR_RED));
+	    const char* msg = file_list[0].name;
+	    int msg_len = strlen(msg);
+	    int max_msg_width = CURSOR_WIDTH - 2;
+	    if (msg_len > max_msg_width) {
+	        // Обрезаем с многоточием, если слишком длинное
+	        mvwprintw(win, msg_row, 3, "%.*s...", max_msg_width - 3, msg);
+	    } else {
+	        mvwprintw(win, msg_row, 3, "%-*s", max_msg_width, msg);
+	    }
+wattroff(win, COLOR_PAIR(COLOR_PAIR_RED));
+	    // Полная очистка области списка (кроме этой строки)
+	    for (int y = 4; y < max_y - 4; y++) {
+	        if (y == msg_row) continue;
+	        for (int x = 2; x < max_x - 2; x++) {
+	            mvwaddch(win, y, x, ' ');
 	        }
 	    }
+	    if (current_file_name) free(current_file_name);
+	    draw_field_frame(win);
+	    return;  // Полностью выходим из функции — всё уже нарисовано
+	}
+	int cursor_end = 2 + CURSOR_WIDTH;  // Выносим наружу, чтобы было видно в блоке пустого каталога
+	for (int i = start_index; i < end_index; i++) {
+	    if (!file_list[i].name) continue;
+	    int row = i - start_index + 4; // Верх списка файлов и директорий.
+    wchar_t wname[CURSOR_WIDTH + 4] = {0};
+    const char *src = file_list[i].name;
+    mbstate_t state = {0};
+    size_t wlen = mbsrtowcs(wname, &src, CURSOR_WIDTH, &state);
 
-	    if (i == selected_index) {
-	        wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
-	        for (int j = 2; j < cursor_end; j++) mvwprintw(win, row, j, "%lc", L'▒');
-	        wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+    if (wlen == (size_t)-1) {
+        wname[0] = L'?';
+        wname[1] = L'\0';
+        wlen = 1;
+    } else if (wlen >= CURSOR_WIDTH) {
+        wname[CURSOR_WIDTH - 4] = L'.';
+        wname[CURSOR_WIDTH - 3] = L'.';
+        wname[CURSOR_WIDTH - 2] = L'.';
+        wname[CURSOR_WIDTH - 1] = L'\0';
+        wlen = CURSOR_WIDTH - 1;
+    } else {
+        wname[wlen] = L'\0'; // гарантируем нуль-терминатор
+    }
+    if (file_list[i].is_dir) {
+        int dirlen = wcslen(wname);
+        if (dirlen < CURSOR_WIDTH - 1) {
+            wname[dirlen] = L'/';
+            wname[dirlen + 1] = L'\0';
+        }
+    }
+    if (i == selected_index) {
+        wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+        for (int j = 2; j < cursor_end; j++) mvwprintw(win, row, j, "%lc", L'▒');
+        wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
 
-	        int text_color = COLOR_PAIR_BORDER;
-	        if (current_file_name && strcmp(file_list[i].name, current_file_name) == 0 && is_raw_file(file_list[i].name))
-	            text_color = current_paused ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
+        int text_color = COLOR_PAIR_BORDER;
+        if (current_file_name && strcmp(file_list[i].name, current_file_name) == 0 && is_raw_file(file_list[i].name))
+            text_color = current_paused ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
 
-	        wattron(win, COLOR_PAIR(text_color));
-	        mvwaddwstr(win, row, 3, wname);
-	        wattroff(win, COLOR_PAIR(text_color));
+        wattron(win, COLOR_PAIR(text_color));
+        mvwaddwstr(win, row, 3, wname);
+        wattroff(win, COLOR_PAIR(text_color));
 
-	        wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
-	        int printed = wcslen(wname);
-	        for (int j = 3 + printed; j < cursor_end; j++) mvwprintw(win, row, j, "%lc", L'▒');
-	        wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
-	    } else {
-	        int text_color = 0;
-	        if (current_file_name && strcmp(file_list[i].name, current_file_name) == 0 && is_raw_file(file_list[i].name))
-	            text_color = current_paused ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
-	        else if (file_list[i].is_dir) text_color = 2;
-	        else if (is_raw_file(file_list[i].name)) text_color = 3;
+        wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+        int printed = wcslen(wname);
+        for (int j = 3 + printed; j < cursor_end; j++) mvwprintw(win, row, j, "%lc", L'▒');
+        wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+    } else {
+        int text_color = 0;
+        if (current_file_name && strcmp(file_list[i].name, current_file_name) == 0 && is_raw_file(file_list[i].name))
+            text_color = current_paused ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
+        else if (file_list[i].is_dir) text_color = 2;
+        else if (is_raw_file(file_list[i].name)) text_color = 3;
 
-	        if (text_color) wattron(win, COLOR_PAIR(text_color));
-	        mvwaddwstr(win, row, 3, wname);
-	        if (text_color) wattroff(win, COLOR_PAIR(text_color));
+        if (text_color) wattron(win, COLOR_PAIR(text_color));
+        mvwaddwstr(win, row, 3, wname);
+        if (text_color) wattroff(win, COLOR_PAIR(text_color));
 
-	        int printed = wcslen(wname);
-    for (int j = 3 + printed; j < cursor_end; j++) mvwprintw(win, row, j, " ");
+        int printed = wcslen(wname);
+        for (int j = 3 + printed; j < cursor_end; j++) mvwprintw(win, row, j, " ");
     }
 }
+// === Специальная обработка пустого каталога ===
+	if (file_count == 1 && file_list[0].name &&
+	    strcmp(file_list[0].name, "Directory is empty or not enough memory.") == 0) {
+	    int msg_row = 4 + (visible_lines / 2);  // Центр списка
+	    if (msg_row < 5) msg_row = 5;
+	    if (msg_row >= max_y - 5) msg_row = max_y - 6;
+
+wattron(win, COLOR_PAIR(COLOR_PAIR_RED)); //	    wattron(win, COLOR_PAIR(COLOR_PAIR_RED) | A_BOLD);
+	    mvwprintw(win, msg_row, 3, "%-*s", CURSOR_WIDTH - 2, file_list[0].name);
+wattroff(win, COLOR_PAIR(COLOR_PAIR_RED)); //	    wattroff(win, COLOR_PAIR(COLOR_PAIR_RED) | A_BOLD);
+
+	    // Очистить остаток строки после сообщения
+	    for (int x = 3 + CURSOR_WIDTH - 2; x < cursor_end; x++) {
+	        mvwaddch(win, msg_row, x, ' ');
+	    }
+	}
+// === Конец специальной обработки ===
     if (file_count > visible_lines) {
         int scroll_height       = max_y - 5;                                     // как у тебя было
         float ratio             = (float)scroll_height / file_count;
@@ -764,13 +812,15 @@ for (int i = start_index; i < end_index; i++) {
 
         wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
     }
- // === КОНЕЦ СКРОЛЛБАРА ===
 if (current_file_name) free(current_file_name);
-// Очистка области под пунктами до нижней границы
-int clear_end = end_index - start_index + 4;  // +4 из-за row offset (строка 4 как старт списка)
-for (int clear_i = clear_end; clear_i < max_y - 4; clear_i++) { // Граница нижней видимости.
-    for (int clear_j = 1; clear_j < max_x - 1; clear_j++) {
-        mvwprintw(win, clear_i, clear_j, " ");
+// Безопасная очистка: не трогаем нижние 4 строки (TIME INFO)
+int last_list_row = end_index - start_index + 4;
+int safe_clear_end = max_y - 5;  // Оставляем место под TIME INFO (начинается с max_y - 3)
+if (last_list_row < safe_clear_end) {
+    for (int y = last_list_row; y < safe_clear_end; y++) {
+        for (int x = 1; x < max_x - 1; x++) {
+            mvwaddch(win, y, x, ' ');
+        }
     }
 }
 	draw_field_frame(win);
@@ -794,7 +844,6 @@ void *player_thread(void *arg) {
             pthread_mutex_unlock(&control->mutex);
             break;
         }
-
         if (control->stop) {
             if (file) { fclose(file); file = NULL; }
             if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
@@ -806,7 +855,6 @@ void *player_thread(void *arg) {
             pthread_mutex_unlock(&control->mutex);
             continue;
         }
-
         if (control->filename && (!control->current_filename || strcmp(control->filename, control->current_filename) != 0)) {
             if (file) fclose(file);
             if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); }
@@ -944,30 +992,47 @@ void *player_thread(void *arg) {
     return NULL;
 }
 // функция перемотки.
-static void perform_seek(PlayerControl *control, snd_pcm_t *handle)
-{
-    if (control->seek_delta == 0 || !control->current_file)
-        return;
-    long long bytes_per_second = 176400LL;
-    long long seek_bytes = (long long)control->seek_delta * bytes_per_second;
-    long long current_pos = ftell(control->current_file);
-    long long new_pos = current_pos + seek_bytes;
-    if (new_pos < 0)
-        new_pos = 0;
-    if (control->duration > 0.0) {
-        long long max_bytes = (long long)(control->duration * 176400.0);
-        if (new_pos > max_bytes)
-            new_pos = max_bytes;
-    }
-    fseek(control->current_file, new_pos, SEEK_SET);
-    control->bytes_read = new_pos;
-    if (handle) {
-        snd_pcm_drop(handle);
-        snd_pcm_prepare(handle);
-    }
-    control->seek_delta = 0;
-}
-// сортировка
+	static void perform_seek(PlayerControl *control, snd_pcm_t *handle)
+	{
+	    if (control->seek_delta == 0 || !control->current_file)
+	        return;
+	    long long bytes_per_second = 176400LL;
+	    long long seek_bytes = (long long)control->seek_delta * bytes_per_second;
+	    long long current_pos = ftell(control->current_file);
+	    long long new_pos = current_pos + seek_bytes;
+	    if (new_pos < 0)
+	        new_pos = 0;
+	    if (control->duration > 0.0) {
+	        long long max_bytes = (long long)(control->duration * 176400.0);
+	        if (new_pos > max_bytes)
+	            new_pos = max_bytes;
+	    }
+	    // Округлить до кратного 4 (frame alignment: 2ch * 2bytes)
+	    new_pos = (new_pos / 4) * 4;
+	    long long delta_bytes = new_pos - current_pos;
+	    if (delta_bytes == 0) {
+	        // Нет сдвига — просто сбросим флаг, без ALSA-операций (избегаем кликов)
+	        control->seek_delta = 0;
+	        return;
+	    }
+	    fseek(control->current_file, new_pos, SEEK_SET);
+	    control->bytes_read = new_pos;
+	    if (handle) {
+	        // Синхронизация ALSA: drop только если назад, иначе forward/rewind
+	        if (seek_bytes < 0) {
+	            snd_pcm_drop(handle);  // Очистка буфера для backward seek
+	        }
+	        long long delta_frames = llabs(delta_bytes) / 4;  // Frames: bytes / (2ch * 2bytes)
+	        if (seek_bytes > 0) {
+	            snd_pcm_forward(handle, delta_frames);  // Forward для +seek
+	        } else {
+	            snd_pcm_rewind(handle, delta_frames);  // Rewind для -seek
+	        }
+	        snd_pcm_prepare(handle);  // Подготовка после sync
+	    }
+	    control->seek_delta = 0;
+	}
+// - сортировка -
 int playlist_cmp(const void *a, const void *b) {  // No static
     const char *path_a = *(const char **)a;
     const char *name_a = strrchr(path_a, '/');
@@ -1023,7 +1088,6 @@ void load_playlist(const char *dir_path, PlayerControl *control) {
         pthread_mutex_unlock(&control->mutex);
         return;
     }
-
     int count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir))) {
@@ -1062,7 +1126,6 @@ void load_playlist(const char *dir_path, PlayerControl *control) {
     qsort(control->playlist, control->playlist_size, sizeof(char *), playlist_cmp); // Сортировка плейлиста по имени (алфавитно, 0→1→2)
     control->current_track = 0;
     control->playlist_mode = 1;
-
 // Запустить первый трек
     if (idx > 0 && control->playlist[0]) {
         if (control->filename) free(control->filename);
@@ -1126,10 +1189,7 @@ int ch;
 	        time_t now = time(NULL);
 	        if (system_time_toggle && now != last_update_time) {
 	            last_update_time = now;
-	            draw_file_list(list_win);
-	            wnoutrefresh(stdscr);
-	            wnoutrefresh(list_win);
-	            doupdate();
+refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
 	        } else {
 	            draw_file_list(list_win);
 	        }
@@ -1138,7 +1198,7 @@ int ch;
     if (help_mode) {
         help_mode = 0;
         update_file_list();  // Обнови список на всякий случай
-        draw_file_list(list_win);
+refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
         strcpy(status_msg, "Back to files — press 'h' for help");
         continue;  // Пропусти switch, чтобы не обрабатывать клавишу как команду
      }
@@ -1224,10 +1284,6 @@ case KEY_RIGHT:
 			} else {
 				snprintf(status_msg, sizeof(status_msg), "No forward history");
 			}
-// должно очищать от сообщения -=-
-//				show_error = 0;
-//				error_msg[0] = '\0';
-//-=-
                          break;
 		}
 // Enter
@@ -1270,23 +1326,13 @@ case KEY_RIGHT:
 	                        player_control.current_filename = strdup(file_list[selected_index].name);
 	                        player_control.paused = 0;
 	                        pthread_mutex_unlock(&player_control.mutex);
-
-	                        draw_file_list(list_win);
-	                        wnoutrefresh(stdscr);
-	                        wnoutrefresh(list_win);
-	                        doupdate();
+refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
                         pthread_mutex_unlock(&player_control.mutex);
-                        draw_file_list(list_win);
-                        wnoutrefresh(stdscr);
-                        wnoutrefresh(list_win);
-                        doupdate();
+refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
 	                    } else {
 	                        strcpy(error_msg, "Not a .raw file");
 	                        show_error = 1;
-	                        draw_field_frame(list_win);
-	                        wnoutrefresh(stdscr);
-	                        wnoutrefresh(list_win);
-	                        doupdate();
+refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
 	                    }
 	                } else {
 // It's a directory — enter it
@@ -1404,8 +1450,7 @@ case 'r': case 'R':
     error_toggle = !error_toggle;     // toggle: вкл/выкл режим
     if (!error_toggle) system_time_toggle = 0;
     break;
-//
-        case 't': case 'T':
+case 't': case 'T':
 		    system_time_toggle = 1;
 		    error_toggle = 0;  // Выключаем TIME при выборе системного времени
 		    break;
@@ -1426,12 +1471,7 @@ case ' ':
     break;
     }
 }
-	    // Всё, что связано с status_msg и плейлистом — теперь только в draw_field_frame()
-	    draw_file_list(list_win);
-	    // Если есть ошибка — рисуем нижнюю панель с красным сообщением
-	    wnoutrefresh(stdscr);
-	    wnoutrefresh(list_win);
-	    doupdate();
+refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
 // Dismiss error on any key press
     if (list_win) {
         delwin(list_win);
@@ -1473,6 +1513,8 @@ void draw_help(WINDOW *win) {
         "",
         " Only .raw files are played, .raw PCM without header",
         " s16le, 2 channels, 44100 Hz, 16 bits/sample, stereo, little-endian",
+        "",
+        " ffmpeg -i input.mp3 -f s16le -ac 2 -ar 44100 output.raw",
         "",
         NULL
     };
@@ -1539,7 +1581,6 @@ if (temp_current && temp_current != temp_filename) {  // Avoid double-free if sa
 }
     pthread_mutex_unlock(&player_control.mutex);
     pthread_mutex_destroy(&player_control.mutex);
-    pthread_cond_destroy(&player_control.cond);
     pthread_cond_destroy(&player_control.cond);
     return result;
 }
