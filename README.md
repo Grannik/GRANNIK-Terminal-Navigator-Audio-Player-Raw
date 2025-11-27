@@ -60,4 +60,5 @@ q     Выход
 Автор Часть COMPLEX SOFTWARE ECOSYSTEM
 © 2025 GRANNIK
 
-github: https://github.com/Grannik/GRANNIK-Terminal-Navigator-Audio-Player-Raw                                                 codeberg: https://codeberg.org/Grannik/TerminalAudioPlayerRaw
+github: https://github.com/Grannik/GRANNIK-Terminal-Navigator-Audio-Player-Raw
+codeberg: https://codeberg.org/Grannik/TerminalAudioPlayerRaw

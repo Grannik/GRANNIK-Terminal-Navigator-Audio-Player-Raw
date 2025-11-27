@@ -1,0 +1,27 @@
+Compilation: gcc -Wall -Wextra -O2 -o tapraw TAPRaw.c -lncursesw -lasound -pthread
+
+* Красный список проверено: *
+
+1
+Access denied to: %s
+Доступ запрещён: %s
+
+2
+Not a .raw file
+Не .raw файл
+
+3
+Directory does not contain raw files.
+Каталог не содержит необработанных файлов.
+
+4
+Directory is empty or not enough memory.
+Каталог пуст или недостаточно памяти.
+
+5
+End of playlist reached
+Достигнут конец плейлиста
+
+4
+Failed to open file: /
+Не удалось открыть файл:
