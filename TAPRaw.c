@@ -22,6 +22,7 @@
 
 /* Прототипы — чтобы не было ошибок компиляции */
 void draw_file_list(WINDOW *win); // Рисует список файлов и всю нижнюю панель
+static void display_message(int type, const char *fmt, ...);   // ← ЭТА СТРОКА НА СТРОКЕ 60
 
 #define SCROLL_FILLED L'█'  // Заполненный блок
 #define SCROLL_EMPTY L'▒'   // Фон бара
@@ -40,7 +41,21 @@ void draw_file_list(WINDOW *win); // Рисует список файлов и �
 #define OUTER_FRAME_WIDTH 84
 #define INNER_WIDTH       82
 #define COLOR_PAIR_PROGRESS 8        // новая пара специально для прогресса
+// Типы сообщений для единой системы вывода в нижнюю панель
+#define ERROR  1    // Красное сообщение об ошибке (например, "Not a .raw file")
+#define STATUS 2    // Жёлтое/обычное статус-сообщение (например, "Playing: …")
 
+static char status_msg[256] = ""; // Буфер для текущего статус-сообщения (временное, показывается один раз)
+static int show_status = 0; // Флаг: надо ли сейчас показывать status_msg в нижней панели?
+
+// clear_line — быстро очищает часть строки в окне пробелами (от start_x до end_x-1)
+static inline void clear_line(WINDOW *win, int y, int start_x, int end_x)
+{
+    while (start_x < end_x) {
+        mvwaddch(win, y, start_x++, ' ');
+    }
+}
+//
 typedef struct {
     char *name;
     int is_dir;
@@ -158,11 +173,13 @@ FILE* open_audio_file(const char *filename) {
         fprintf(stderr, "Invalid filename in open_audio_file\n");
         return NULL;
     }
+
     FILE *file = fopen(filename, "rb");
     if (!file) {
-        fprintf(stderr, "Не удалось открыть файл: %s\n", filename);
+        display_message(ERROR, "Failed to open file: %s", filename);
         return NULL;
     }
+
     return file;
 }
 //
@@ -341,7 +358,36 @@ static int is_raw_file(const char *name) {
 	static int show_error = 0;
         static int error_toggle = 0;
 	static int system_time_toggle = 0;
-	void draw_field_frame(WINDOW *win) {
+// Универсальная функция для вывода временных сообщений в нижнюю панель TIME INFO
+void display_message(int type, const char *fmt, ...)
+//static void display_message(int type, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    if (type == ERROR) {
+        vsnprintf(error_msg, sizeof(error_msg), fmt, ap);
+        show_error = 1;
+    } else if (type == STATUS) {
+        vsnprintf(status_msg, sizeof(status_msg), fmt, ap);
+        show_status = 1;
+    }
+    va_end(ap);
+}
+// Выводит текст по центру строки с заданным цветом и атрибутами (используется в нижней панели)
+static void print_centered(WINDOW *win, int y, int width, const char *text, int color_pair, int attr)
+{
+    int len = strlen(text);
+    int x = (width - len) / 2;
+    if (x < 2) x = 2;
+    if (x + len > width - 2) x = width - len - 2;
+
+    wattron(win, COLOR_PAIR(color_pair) | attr);
+    mvwprintw(win, y, x, "%s", text);
+    wattroff(win, COLOR_PAIR(color_pair) | attr);
+}
+
+    void draw_field_frame(WINDOW *win)
+ {
     const int fixed_width = FILE_LIST_FIXED_WIDTH;
     const char *title = "TIME INFO";
     int title_len = strlen(title) + 4;
@@ -357,19 +403,9 @@ static int is_raw_file(const char *name) {
     if (title_start + title_len > actual_width - 1) title_start = actual_width - title_len - 1;
     mvwprintw(win, field_y, title_start, "┤ %s ├", title);
 	if (show_error) {
-	    // Полностью очищаем строку
-	    for (int i = 2; i < actual_width - 2; i++) {
-	        mvwaddch(win, field_y + 1, i, ' ');
-	    }
-	    int msg_len = strlen(error_msg);
-	    int start_x = (actual_width - msg_len) / 2;
-	    if (start_x < 2) start_x = 2;
-	    if (start_x + msg_len > actual_width - 2) start_x = actual_width - msg_len - 2;
-        wattron(win, COLOR_PAIR(COLOR_PAIR_RED));
-        mvwprintw(win, field_y + 1, start_x, "%s", error_msg);
-        wattroff(win, COLOR_PAIR(COLOR_PAIR_RED));
+// Полностью очищаем строку
+	print_centered(win, field_y + 1, actual_width, error_msg, COLOR_PAIR_RED, 0);
 	} else {
-//
     wattron(win, COLOR_PAIR(COLOR_PAIR_WHITE));
     if (system_time_toggle) {
         time_t now = time(NULL);
@@ -384,28 +420,13 @@ static int is_raw_file(const char *name) {
                  weekdays[tm_info->tm_wday],
                  tm_info->tm_mday,
                  tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
-        int time_len = strlen(time_str);
-        int start_x = (actual_width - time_len) / 2;
-        if (start_x < 2) start_x = 2;
-        mvwprintw(win, field_y + 1, start_x, "%s", time_str);
-} else if (error_toggle) {
-    int is_raw = 0;
-       if (file_count > 0 && selected_index >= 0 && file_list[selected_index].name) {
-        const char *name = file_list[selected_index].name;
-        size_t len = strlen(name);
-        if (len >= 4 && strcmp(name + len - 4, ".raw") == 0) {
-            is_raw = 1;
-        }
-    }
-
-    wattron(win, COLOR_PAIR(COLOR_PAIR_RED) | A_BOLD);
-    if (is_raw) {
-        mvwprintw(win, field_y + 1, (actual_width - 8) / 2, "   RAW   ");
-    } else {
-        mvwprintw(win, field_y + 1, (actual_width - 10) / 2, "  ERROR  ");
-    }
-    wattroff(win, COLOR_PAIR(COLOR_PAIR_RED) | A_BOLD);
-    } else {
+	print_centered(win, field_y + 1, actual_width, time_str, COLOR_PAIR_WHITE, 0);
+}
+ else if (show_status) {
+	    clear_line(win, field_y + 1, 2, actual_width - 2);
+	    print_centered(win, field_y + 1, actual_width, status_msg, COLOR_PAIR_YELLOW, 0);
+	}
+ else {
         pthread_mutex_lock(&player_control.mutex);
         double duration = player_control.duration;
         long bytes_read = player_control.bytes_read;
@@ -538,18 +559,14 @@ void free_file_list(void) {
 //
 void update_file_list(void) {
     free_file_list();
-
-    DIR *dir = opendir(current_dir);
-    if (!dir) {
-        file_list = calloc(1, sizeof(FileEntry));
-        if (file_list) {
-            file_list[0].name = strdup("(access denied)");
-            file_list[0].is_dir = 0;
-            file_count = file_list[0].name ? 1 : 0;
-        }
-        selected_index = 0;
-        return;
-    }
+DIR *dir = opendir(current_dir);
+if (!dir) {
+    free_file_list();
+    file_list = calloc(1, sizeof(FileEntry)); file_list[0].name = strdup("(access denied)"); file_list[0].is_dir = 0; file_count = 1;
+    selected_index = 0;
+    display_message(ERROR, "Access denied to: %s", current_dir);
+    return;
+}
 // Первый проход — считаем количество
     int capacity = 128;
     int count = 0;
@@ -697,13 +714,11 @@ wattron(win, COLOR_PAIR(COLOR_PAIR_RED));
 	        mvwprintw(win, msg_row, 3, "%-*s", max_msg_width, msg);
 	    }
 wattroff(win, COLOR_PAIR(COLOR_PAIR_RED));
-	    // Полная очистка области списка (кроме этой строки)
-	    for (int y = 4; y < max_y - 4; y++) {
-	        if (y == msg_row) continue;
-	        for (int x = 2; x < max_x - 2; x++) {
-	            mvwaddch(win, y, x, ' ');
-	        }
-	    }
+// Полная очистка области списка (кроме этой строки)
+		    for (int y = 4; y < max_y - 4; y++) {
+		        if (y == msg_row) continue;
+		        clear_line(win, y, 2, max_x - 2);
+		    }
 	    if (current_file_name) free(current_file_name);
 	    draw_field_frame(win);
 	    return;  // Полностью выходим из функции — всё уже нарисовано
@@ -779,11 +794,7 @@ wattroff(win, COLOR_PAIR(COLOR_PAIR_RED));
 wattron(win, COLOR_PAIR(COLOR_PAIR_RED)); //	    wattron(win, COLOR_PAIR(COLOR_PAIR_RED) | A_BOLD);
 	    mvwprintw(win, msg_row, 3, "%-*s", CURSOR_WIDTH - 2, file_list[0].name);
 wattroff(win, COLOR_PAIR(COLOR_PAIR_RED)); //	    wattroff(win, COLOR_PAIR(COLOR_PAIR_RED) | A_BOLD);
-
-	    // Очистить остаток строки после сообщения
-	    for (int x = 3 + CURSOR_WIDTH - 2; x < cursor_end; x++) {
-	        mvwaddch(win, msg_row, x, ' ');
-	    }
+		    clear_line(win, msg_row, 3 + CURSOR_WIDTH - 2, cursor_end);
 	}
 // === Конец специальной обработки ===
     if (file_count > visible_lines) {
@@ -818,9 +829,7 @@ int last_list_row = end_index - start_index + 4;
 int safe_clear_end = max_y - 5;  // Оставляем место под TIME INFO (начинается с max_y - 3)
 if (last_list_row < safe_clear_end) {
     for (int y = last_list_row; y < safe_clear_end; y++) {
-        for (int x = 1; x < max_x - 1; x++) {
-            mvwaddch(win, y, x, ' ');
-        }
+        clear_line(win, y, 1, max_x - 1);
     }
 }
 	draw_field_frame(win);
@@ -961,21 +970,27 @@ void *player_thread(void *arg) {
                         control->stop = 0;
                         pthread_cond_signal(&control->cond);
                         pthread_mutex_unlock(&control->mutex);
-                    } else if (control->playlist_mode) {
-                        // End of playlist — full stop
-                        if (file) { fclose(file); file = NULL; }
-                        if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
-                        free(poll_fds); poll_fds = NULL;
-                        control->playlist_mode = 0;
-                        control->stop = 1;
-                        pthread_cond_signal(&control->cond);
-                        pthread_mutex_unlock(&control->mutex);
+	                    } else if (control->playlist_mode) {
+	                        // End of playlist — full stop
+	                        if (file) { fclose(file); file = NULL; }
+	                        if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
+	                        free(poll_fds); poll_fds = NULL;
+	                        control->playlist_mode = 0;
+	                        control->stop = 1;
+	                        control->duration = 0.0;
+	                        control->bytes_read = 0;
+	                        pthread_cond_signal(&control->cond);
+	                        display_message(STATUS, "End of playlist reached");
+	                        pthread_mutex_unlock(&control->mutex);
+//
                     } else {
                         // Single file end — stop
                         if (file) { fclose(file); file = NULL; }
                         if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
                         free(poll_fds); poll_fds = NULL;
                         control->stop = 1;
+                        control->duration = 0.0;
+                        control->bytes_read = 0;
                         pthread_cond_signal(&control->cond);
                         pthread_mutex_unlock(&control->mutex);
                     }
@@ -1050,7 +1065,7 @@ int playlist_cmp(const void *a, const void *b) {  // No static
     }
     return strcmp(name_a, name_b); // Алфавитно, как в UI
 }
-//
+
 void load_playlist(const char *dir_path, PlayerControl *control) {
     pthread_mutex_lock(&control->mutex);
     // Остановить текущий playback
@@ -1189,7 +1204,6 @@ int ch;
 	        time_t now = time(NULL);
 	        if (system_time_toggle && now != last_update_time) {
 	            last_update_time = now;
-refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
 	        } else {
 	            draw_file_list(list_win);
 	        }
@@ -1198,17 +1212,18 @@ refresh_ui(); // Полное обновление экрана: перерис�
     if (help_mode) {
         help_mode = 0;
         update_file_list();  // Обнови список на всякий случай
-refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
         strcpy(status_msg, "Back to files — press 'h' for help");
         continue;  // Пропусти switch, чтобы не обрабатывать клавишу как команду
      }
 // Сбрасываем ошибку при любой клавише, кроме стрелок
-	    if (ch != 10) {
-	        show_error = 0;
-	        error_msg[0] = '\0';
-	    }
+	if (ch != 10) {
+	    show_error = 0;
+	    error_msg[0] = '\0';
+	    show_status = 0;
+	    status_msg[0] = '\0';
+	}
 // Выключает функции если не клавиша.
-        if (ch != 'r' && ch != 'R') error_toggle = 0;
+//        if (ch != 'r' && ch != 'R') error_toggle = 0;
         if (ch != 't' && ch != 'T') system_time_toggle = 0;
     strcpy(status_msg, "");
     if (ch == 'q' || ch == 'Q') break;
@@ -1295,7 +1310,7 @@ case KEY_RIGHT:
 	                        // Play .raw file
 	                        char *full_path = xasprintf("%s/%s", current_dir, file_list[selected_index].name);
 	                        if (!full_path) {
-	                            snprintf(status_msg, sizeof(status_msg), "Out of memory! Cannot play file.");
+	display_message(STATUS, "Out of memory! Cannot play file.");
 	                            break;
 	                        }
 
@@ -1316,9 +1331,6 @@ case KEY_RIGHT:
 	                        player_control.paused = 0;
 	                        pthread_cond_signal(&player_control.cond);
 	                        pthread_mutex_unlock(&player_control.mutex);
-
-	                        snprintf(status_msg, sizeof(status_msg), "Playing: %s", file_list[selected_index].name);
-
 	                        pthread_mutex_lock(&player_control.mutex);
 	                        if (player_control.current_filename) {
 	                            free(player_control.current_filename);
@@ -1326,28 +1338,21 @@ case KEY_RIGHT:
 	                        player_control.current_filename = strdup(file_list[selected_index].name);
 	                        player_control.paused = 0;
 	                        pthread_mutex_unlock(&player_control.mutex);
-refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
                         pthread_mutex_unlock(&player_control.mutex);
-refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
 	                    } else {
-	                        strcpy(error_msg, "Not a .raw file");
-	                        show_error = 1;
-refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
+	display_message(ERROR, "Not a .raw file");
 	                    }
 	                } else {
-// It's a directory — enter it
 	                    int dir_fd = openat(AT_FDCWD, file_list[selected_index].name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-	                    if (dir_fd == -1) {
-	                        snprintf(status_msg, sizeof(status_msg), "Cannot enter directory: %s", strerror(errno));
-	                        break;
-	                    }
-
-	                    if (fchdir(dir_fd) != 0) {
-	                        snprintf(status_msg, sizeof(status_msg), "fchdir failed: %s", strerror(errno));
-	                        close(dir_fd);
-	                        break;
-	                    }
-
+if (dir_fd == -1) {
+    display_message(ERROR, "Access denied to: %s/%s", current_dir, file_list[selected_index].name);
+    break;
+}
+if (fchdir(dir_fd) != 0) {
+    display_message(ERROR, "Access denied to: %s/%s", current_dir, file_list[selected_index].name);
+    close(dir_fd);
+    break;
+}
 	                    close(dir_fd);
 	                    // Save old_dir before chdir for fallback
 	                    char old_dir[PATH_MAX];
@@ -1377,8 +1382,6 @@ refresh_ui(); // Полное обновление экрана: перерис�
 	                            snprintf(status_msg, sizeof(status_msg), "Path too long, fallback to old dir");
 	                        }
 	                    }
-
-//	                    clear_forward_history();
 	                    update_file_list();
 	                }
 	            }
@@ -1446,10 +1449,6 @@ case 'p': case 'P':
 	    draw_file_list(list_win);
 	    snprintf(status_msg, sizeof(status_msg), "Back to files — press 'h' for help");
 	    break;
-case 'r': case 'R':
-    error_toggle = !error_toggle;     // toggle: вкл/выкл режим
-    if (!error_toggle) system_time_toggle = 0;
-    break;
 case 't': case 'T':
 		    system_time_toggle = 1;
 		    error_toggle = 0;  // Выключаем TIME при выборе системного времени
@@ -1458,20 +1457,30 @@ case ' ':
     if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name && file_list[selected_index].is_dir) {
         char full_path[PATH_MAX * 2];
         if (snprintf(full_path, sizeof(full_path), "%s/%s", current_dir, file_list[selected_index].name) >= (int)sizeof(full_path)) {
-            snprintf(status_msg, sizeof(status_msg), "Path too long!");
+	display_message(STATUS, "Path too long!");
         } else {
             load_playlist(full_path, &player_control);
-            snprintf(status_msg, sizeof(status_msg),
-                     "Playlist loaded: %d tracks from %s",
-                     player_control.playlist_size, file_list[selected_index].name);
+            if (player_control.playlist_size == 0) {
+	display_message(ERROR, "Directory does not contain raw files.");
+            } else {
+            }
         }
     } else {
-        snprintf(status_msg, sizeof(status_msg), "Select a directory for playlist!");
+            if (file_count > 0 && selected_index >= 0 && file_list && strcmp(file_list[selected_index].name, "Directory is empty or not enough memory.") == 0) {
+                strcpy(error_msg, "Directory does not contain raw files.");
+                show_error = 1;
+            } else {
+	display_message(STATUS, "Select a directory for playlist!");
+	        }
     }
     break;
     }
 }
-refresh_ui(); // Полное обновление экрана: перерисовка списка + синхронизация всех окон
+refresh_ui();   // ← ЕДИНСТВЕННЫЙ вызов за всю итерацию цикла!
+	// Сброс временных сообщений (по желанию, можно позже)
+		if (show_status && ch != ERR) {
+		    show_status = 0;
+		}
 // Dismiss error on any key press
     if (list_win) {
         delwin(list_win);
@@ -1484,9 +1493,8 @@ refresh_ui(); // Полное обновление экрана: перерис�
 }
 void draw_help(WINDOW *win) {
     for (int clear_y = 4; clear_y < term_height - 6; clear_y++) {
-        mvwprintw(win, clear_y, 2, "%-78s", "");
+        clear_line(win, clear_y, 2, 80);
     }
-
     const char *help_lines[] = {
         " ↑       move up the list",
         " ↓       move down the list",
