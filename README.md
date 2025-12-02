@@ -43,7 +43,6 @@ s     Стоп
 f     +10 секунд
 b     −10 секунд
 t     Показать системное время в нижней панели
-r     Режим отображения ошибок (красный)
 h     Помощь
 q     Выход
 
@@ -62,3 +61,4 @@ q     Выход
 
 github: https://github.com/Grannik/GRANNIK-Terminal-Navigator-Audio-Player-Raw
 codeberg: https://codeberg.org/Grannik/TerminalAudioPlayerRaw
+gitlab: https://gitlab.com/grannik/grannik-terminal-navigator-audio-player-raw
