@@ -21,32 +21,10 @@
 #include <time.h>
 #include <fcntl.h>
 
-//static inline void clear_line(WINDOW *win, int y, int start_x, int end_x);
-//static inline void refresh_ui(void);
-//void *player_thread(void *arg);
-//int add_to_forward(const char *dir);
-//int main(int argc, char *argv[]);
-//int navigate_and_play(void);
 static int navigate_dir(const char *target_dir, char *status_buf);
-//int playlist_cmp(const void *a, const void *b);
-//int set_alsa_params(snd_pcm_t *handle, unsigned int rate, int channels);
-//void cleanup(FILE *file, snd_pcm_t *handle);
-void clear_forward_history(void);
 static void display_message(int type, const char *fmt, ...);
-void draw_field_frame(WINDOW *win);
 void draw_file_list(WINDOW *win);
 void draw_help(WINDOW *win, int start_index);
-void draw_menu_frame(WINDOW *win);
-void draw_outer_frame(WINDOW *win, int rows, int cols, int headers_only);
-void free_file_list(void);
-void free_forward_history(void);
-snd_pcm_t* init_audio_device(unsigned int rate, int channels);
-void init_ncurses(const char *locale);
-FILE* open_audio_file(const char *filename);
-void play_audio(snd_pcm_t *handle, char *buffer, int size);
-void top(WINDOW *win);
-void update_file_list(void);
-static char *xasprintf(const char *fmt, ...);
 
 #define SCROLL_FILLED L'█'
 #define SCROLL_EMPTY L'▒'
@@ -211,12 +189,22 @@ FILE* open_audio_file(const char *filename) {
 
     return file;
 }
-void cleanup(FILE *file, snd_pcm_t *handle) {
-    if (file) fclose(file);
-    if (handle) {
-        snd_pcm_drop(handle);
-        snd_pcm_drain(handle);
-        snd_pcm_close(handle);
+static void full_cleanup(FILE **file, snd_pcm_t **handle, struct pollfd **poll_fds, char **current_filename) {
+    if (*file) fclose(*file);
+    if (*handle) {
+        snd_pcm_drop(*handle);
+        snd_pcm_drain(*handle);
+        snd_pcm_close(*handle);
+    }
+    if (file) *file = NULL;
+    if (handle) *handle = NULL;
+    if (poll_fds && *poll_fds) {
+        free(*poll_fds);
+        *poll_fds = NULL;
+    }
+    if (current_filename && *current_filename) {
+        free(*current_filename);
+        *current_filename = NULL;
     }
 }
 snd_pcm_t* init_audio_device(unsigned int rate, int channels) {
@@ -277,12 +265,12 @@ void draw_outer_frame(WINDOW *win, int rows, int cols, int headers_only) {
 }
 void top(WINDOW *win) {
     extern char current_dir[PATH_MAX];
-    const int fixed_width = FILE_LIST_FIXED_WIDTH;
     const char *title = "PATH";
     int title_len = strlen(title) + 4;
-    int max_x; int max_y; getmaxyx(win, max_y, max_x); (void)max_y;
+    int max_y, max_x;
     getmaxyx(win, max_y, max_x);
-    int actual_width = (max_x < fixed_width) ? max_x : fixed_width;
+    (void)max_y;
+    int actual_width = (max_x < FILE_LIST_FIXED_WIDTH) ? max_x : FILE_LIST_FIXED_WIDTH;
     wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
     mvwprintw(win, 0, 0, "┌");
     for (int i = 1; i < actual_width - 1; i++) {
@@ -309,12 +297,11 @@ mvwprintw(win, 2, actual_width - 1, "┘");
     mvwprintw(win, 1, 2, "%s", path_display);
 }
 void draw_menu_frame(WINDOW *win) {
-    const int fixed_width = FILE_LIST_FIXED_WIDTH;
-    const char *title = "FILES & DIRECTORIES INFO";
+    const char *title = "FILES & DIRECTORIES";
     int title_len = strlen(title) + 4;
     int max_y, max_x;
     getmaxyx(win, max_y, max_x);
-    int actual_width = (max_x < fixed_width) ? max_x : fixed_width;
+    int actual_width = (max_x < FILE_LIST_FIXED_WIDTH) ? max_x : FILE_LIST_FIXED_WIDTH;
     int usable_height = max_y - 3;
     if (usable_height < 3) usable_height = 3;
     wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
@@ -335,6 +322,36 @@ void draw_menu_frame(WINDOW *win) {
     mvwprintw(win, usable_height - 1, actual_width - 1, "┘");
     wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
 }
+
+void draw_help_frame(WINDOW *win) {
+    const char *title = "HELP";
+    int title_len = strlen(title) + 4;
+    int max_y, max_x;
+    getmaxyx(win, max_y, max_x);
+    int offset_y = 3;
+    int actual_width = (max_x < FILE_LIST_FIXED_WIDTH) ? max_x : FILE_LIST_FIXED_WIDTH;
+    int usable_height = max_y - offset_y - 3;
+    if (usable_height < 3) usable_height = 3;
+    wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+    mvwprintw(win, offset_y + 0, 0, "┌");
+    for (int i = 1; i < actual_width - 1; i++)
+        mvwprintw(win, offset_y + 0, i, "─");
+    mvwprintw(win, offset_y + 0, actual_width - 1, "┐");
+    int title_start = (actual_width - title_len) / 2;
+    if (title_start < 1) title_start = 1;
+    mvwprintw(win, offset_y + 0, title_start, "┤ %s ├", title);
+    for (int y = 1; y < usable_height - 1; y++) {
+        mvwprintw(win, offset_y + y, 0, "│");
+        mvwprintw(win, offset_y + y, actual_width - 1, "│");
+    }
+    mvwprintw(win, offset_y + usable_height - 1, 0, "└");
+    for (int i = 1; i < actual_width - 1; i++)
+        mvwprintw(win, offset_y + usable_height - 1, i, "─");
+    mvwprintw(win, offset_y + usable_height - 1, actual_width - 1, "┘");
+
+    wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+}
+
 typedef struct {
     char *filename;
     int pause;
@@ -400,11 +417,11 @@ static void print_centered(WINDOW *win, int y, int width, const char *text, int 
 
     void draw_field_frame(WINDOW *win)
  {
-    const int fixed_width = FILE_LIST_FIXED_WIDTH;
     const char *title = "TIME INFO";
     int title_len = strlen(title) + 4;
-    int max_x, max_y; getmaxyx(win, max_y, max_x); (void)max_y;
-    int actual_width = (max_x < fixed_width) ? max_x : fixed_width;
+    int max_y, max_x;
+    getmaxyx(win, max_y, max_x);
+    int actual_width = (max_x < FILE_LIST_FIXED_WIDTH) ? max_x : FILE_LIST_FIXED_WIDTH;
     int field_y = max_y - 3;
     wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
     mvwprintw(win, field_y, 0, "┌");
@@ -849,20 +866,18 @@ void *player_thread(void *arg) {
             break;
         }
         if (control->stop) {
-            if (file) { fclose(file); file = NULL; }
-            if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
-            if (control->current_filename) { free(control->current_filename); control->current_filename = NULL; }
-            if (control->filename) { free(control->filename); control->filename = NULL; }
-            free(poll_fds); poll_fds = NULL;
-            control->stop = 0;
+full_cleanup(&file, &handle, &poll_fds, &control->current_filename);
+if (control->filename) {
+    free(control->filename);
+    control->filename = NULL;
+}
+control->stop = 0;
             pthread_cond_signal(&control->cond);
             pthread_mutex_unlock(&control->mutex);
             continue;
         }
         if (control->filename && (!control->current_filename || strcmp(control->filename, control->current_filename) != 0)) {
-            if (file) fclose(file);
-            if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); }
-            if (control->current_filename) { free(control->current_filename); control->current_filename = NULL; }
+    full_cleanup(&file, &handle, NULL, &control->current_filename);
             free(poll_fds); poll_fds = NULL;
 
     file = open_audio_file(control->filename);
@@ -901,15 +916,12 @@ void *player_thread(void *arg) {
      if (poll_fds) {
          snd_pcm_poll_descriptors(handle, poll_fds, poll_count);
      } else {
-         cleanup(file, handle);
-         file = NULL;
-         handle = NULL;
+    full_cleanup(&file, &handle, NULL, NULL);
          continue;
      }
  }
                 } else {
-                    cleanup(file, handle);
-                    file = NULL; handle = NULL;
+    full_cleanup(&file, &handle, NULL, NULL);
                 }
             } else {
                 free(control->filename);
@@ -955,16 +967,12 @@ void *player_thread(void *arg) {
                         if (!control->filename) {
                             control->current_track = control->playlist_size;
                         }
-                        if (file) { fclose(file); file = NULL; }
-                        if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
-                        free(poll_fds); poll_fds = NULL;
+    full_cleanup(&file, &handle, &poll_fds, NULL);
                         control->stop = 0;
                         pthread_cond_signal(&control->cond);
                         pthread_mutex_unlock(&control->mutex);
 	                    } else if (control->playlist_mode) {
-	                        if (file) { fclose(file); file = NULL; }
-	                        if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
-	                        free(poll_fds); poll_fds = NULL;
+    full_cleanup(&file, &handle, &poll_fds, NULL);
 	                        control->playlist_mode = 0;
 	                        control->stop = 1;
 	                        control->duration = 0.0;
@@ -973,9 +981,7 @@ void *player_thread(void *arg) {
 	                        display_message(STATUS, "End of playlist reached");
 	                        pthread_mutex_unlock(&control->mutex);
                     } else {
-                        if (file) { fclose(file); file = NULL; }
-                        if (handle) { snd_pcm_drain(handle); snd_pcm_close(handle); handle = NULL; }
-                        free(poll_fds); poll_fds = NULL;
+    full_cleanup(&file, &handle, &poll_fds, NULL);
                         control->stop = 1;
                         control->duration = 0.0;
                         control->bytes_read = 0;
@@ -988,13 +994,7 @@ void *player_thread(void *arg) {
             usleep(100000);
         }
     }
-
-    cleanup(file, handle);
-	if (control->current_filename) {
-	    free(control->current_filename);
-	    control->current_filename = NULL;
-	}
-    free(poll_fds);
+    full_cleanup(&file, &handle, &poll_fds, &control->current_filename);
     return NULL;
 }
 	static void perform_seek(PlayerControl *control, snd_pcm_t *handle)
@@ -1170,6 +1170,38 @@ static void shutdown_player_thread(PlayerControl *control, pthread_t thread, int
     } else {
         pthread_join(thread, NULL);
     }
+}
+static void action_p(void) {
+    player_control.pause = 1;
+    player_control.paused = !player_control.paused;
+}
+
+static void action_f(void) {
+    player_control.seek_delta = 10;
+}
+
+static void action_b(void) {
+    player_control.seek_delta = -10;
+}
+
+static void action_s(void) {
+    player_control.stop = 1;
+    player_control.duration   = 0.0;
+    player_control.bytes_read = 0;
+    if (player_control.current_filename) {
+        free(player_control.current_filename);
+        player_control.current_filename = NULL;
+    }
+    player_control.paused = 0;
+    player_control.playlist_mode = 0;
+    player_control.current_track = 0;
+}
+
+static void with_player_control_lock(void (*action)(void)) {
+    pthread_mutex_lock(&player_control.mutex);
+    if (action) action();
+    pthread_cond_signal(&player_control.cond);
+    pthread_mutex_unlock(&player_control.mutex);
 }
 int navigate_and_play(void) {
     init_ncurses("ru_RU.UTF-8");
@@ -1377,53 +1409,30 @@ case KEY_RIGHT:
 	            }
 	            break;
 case 'p': case 'P':
-    pthread_mutex_lock(&player_control.mutex);
-    player_control.pause = 1;
-    player_control.paused = !player_control.paused;
-    pthread_cond_signal(&player_control.cond);
-    pthread_mutex_unlock(&player_control.mutex);
-    snprintf(status_msg, sizeof(status_msg), "Pause/Resume: %s",
-             player_control.paused ? "PAUSED" : "RESUMED");
-    break;
+with_player_control_lock(action_p);
+snprintf(status_msg, sizeof(status_msg), "Pause/Resume: %s",
+player_control.paused ? "PAUSED" : "RESUMED");
+break;
 	case 'f':
-	    pthread_mutex_lock(&player_control.mutex);
-	    if (player_control.current_file) {
-	        player_control.seek_delta = 10;
-	        pthread_cond_signal(&player_control.cond);
-	        snprintf(status_msg, sizeof(status_msg), "→ +10 сек");
-	    } else {
-	        snprintf(status_msg, sizeof(status_msg), "Нечего перематывать");
-	    }
-	    pthread_mutex_unlock(&player_control.mutex);
-	    break;
+if (player_control.current_file) {
+with_player_control_lock(action_f);
+snprintf(status_msg, sizeof(status_msg), "→ +10 сек");
+} else {
+snprintf(status_msg, sizeof(status_msg), "Нечего перематывать");
+}
+break;
 	case 'b':
-	    pthread_mutex_lock(&player_control.mutex);
-	    if (player_control.current_file) {
-	        player_control.seek_delta = -10;
-	        pthread_cond_signal(&player_control.cond);
-	        snprintf(status_msg, sizeof(status_msg), "← -10 сек");
-	    } else {
-	        snprintf(status_msg, sizeof(status_msg), "Нечего перематывать");
-	    }
-	    pthread_mutex_unlock(&player_control.mutex);
-	    break;
+if (player_control.current_file) {
+with_player_control_lock(action_b);
+snprintf(status_msg, sizeof(status_msg), "← -10 сек");
+} else {
+snprintf(status_msg, sizeof(status_msg), "Нечего перематывать");
+}
+break;
 	case 's': case 'S':
-	    pthread_mutex_lock(&player_control.mutex);
-	    player_control.stop = 1;
-	    player_control.duration   = 0.0;
-	    player_control.bytes_read = 0;
-	    if (player_control.current_filename) {
-	        free(player_control.current_filename);
-	        player_control.current_filename = NULL;
-	    }
-	    player_control.paused = 0;
-	    player_control.playlist_mode = 0;
-	    player_control.current_track = 0;
-
-	    pthread_cond_signal(&player_control.cond);
-	    pthread_mutex_unlock(&player_control.mutex);
-	    snprintf(status_msg, sizeof(status_msg), "Playback stopped");
-	    break;
+with_player_control_lock(action_s);
+snprintf(status_msg, sizeof(status_msg), "Playback stopped");
+break;
 		case 'h': case 'H':
 		{
 		    int help_start_index = 0;
@@ -1440,7 +1449,7 @@ case 'p': case 'P':
 		                int max_y, max_x;
 		                getmaxyx(list_win, max_y, max_x); (void)max_x;
 		                int visible_lines = max_y - 6;
-		                int help_count = 28;
+		                int help_count = 35;
 		                if (help_start_index < help_count - visible_lines) help_start_index++;
 		                break;
 		            case 'q': case 'Q':
@@ -1500,7 +1509,8 @@ refresh_ui();
 void draw_help(WINDOW *win, int start_index) {
     int max_y, max_x;
     getmaxyx(win, max_y, max_x); (void)max_x;
-clear_area(win, 3, max_y - 3, 0, 83);
+    clear_area(win, 3, max_y - 3, 0, 83);
+    draw_help_frame(win);
     const char *help_lines[] = {
         " ↑       move up the list",
         " ↓       move down the list",
@@ -1537,7 +1547,7 @@ clear_area(win, 3, max_y - 3, 0, 83);
     };
     int help_count = 0;
     while (help_lines[help_count]) help_count++;
-    int visible_lines = max_y - 6;
+    int visible_lines = max_y - 8;
     if (visible_lines < 1) visible_lines = 1;
 if (start_index < 0) start_index = 0;
 int max_start = help_count - visible_lines;
@@ -1545,9 +1555,9 @@ if (max_start < 0) max_start = 0;
 if (start_index > max_start) start_index = max_start;
     int end_index = start_index + visible_lines;
     if (end_index > help_count) end_index = help_count;
-    int y = 3;
+    int y = 4;
     for (int i = start_index; i < end_index; i++) {
-        mvwprintw(win, y++, 0, "%s", help_lines[i]);
+        mvwprintw(win, y++, 1, "%s", help_lines[i]);
     }
     wnoutrefresh(win);
     doupdate();
@@ -1603,4 +1613,4 @@ free_str_array(player_control.playlist, player_control.playlist_size);
     pthread_cond_destroy(&player_control.cond);
     return result;
 }
-// 1606
+// 1616
