@@ -20,8 +20,39 @@
 #include <libgen.h>
 #include <time.h>
 #include <fcntl.h>
+#include <strings.h>
 
 void draw_file_list(WINDOW *win);
+
+int convert_to_wchar(const char *src, wchar_t **wsrc_out, size_t *wlen_out) {
+    if (!src || !wsrc_out || !wlen_out) return -1;
+    size_t src_len = strlen(src);
+    wchar_t *wsrc = calloc(src_len + 1, sizeof(wchar_t));
+    if (!wsrc) return -1;
+    mbstate_t state = {0};
+    const char *ptr = src;
+    size_t wlen = mbsrtowcs(wsrc, &ptr, src_len + 1, &state);
+    if (wlen == (size_t)-1) {
+        free(wsrc);
+        wsrc = calloc(src_len + 1, sizeof(wchar_t));
+        if (!wsrc) return -1;
+        const char *p = src;
+        size_t idx = 0;
+        while (*p && idx < src_len) {
+            if ((unsigned char)*p <= 127) {
+                wsrc[idx++] = (wchar_t)(unsigned char)*p;
+            } else {
+                wsrc[idx++] = L'?';
+            }
+            p++;
+        }
+        wsrc[idx] = L'\0';
+        wlen = idx;
+    }
+    *wsrc_out = wsrc;
+    *wlen_out = wlen;
+    return 0;
+}
 
 #define SCROLL_FILLED L'█'
 #define SCROLL_EMPTY L'▒'
@@ -49,11 +80,14 @@ void draw_file_list(WINDOW *win);
 #define BUFFER_FRAMES 122
 #define STATUS_DURATION_SECONDS 5
 
+#define DISPLAY_ALSA_ERROR(func, err) display_message(ERROR, func " failed: %s — audio disabled", snd_strerror(err))
+#define DISPLAY_ALSA_ERROR_NO_ERR(msg) display_message(ERROR, msg " — audio disabled")
 #define SAFE_RETURN_IF_NULL(ptr, val) if (!(ptr)) { return (val); }
 #define SAFE_CONTINUE_IF_NULL(ptr) if (!(ptr)) { continue; }
 #define SAFE_ACTION_IF_NULL(ptr, ...) if (!(ptr)) { __VA_ARGS__; }
-#define SAFE_FREE(ptr) if ((ptr)) { free(ptr); (ptr) = NULL; }
-#define SAFE_FREE_ARRAY(arr, count) if ((arr)) { free_str_array((arr), (count)); (arr) = NULL; }
+#define SAFE_FREE_GENERIC(ptr, free_func, ...) if ((ptr)) { free_func((ptr), ##__VA_ARGS__); (ptr) = NULL; }
+#define SAFE_FREE(ptr) SAFE_FREE_GENERIC((ptr), free)
+#define SAFE_FREE_ARRAY(arr, count) SAFE_FREE_GENERIC((arr), free_str_array, (count))
 #define SAFE_FREE_ARRAY_IF(cond, arr, count) if ((cond)) { SAFE_FREE_ARRAY((arr), (count)); }
 #define SAFE_STRDUP(src) ({ char *dup = strdup((src)); dup; })
 #define SAFE_CALLOC(num, size) calloc((num), (size))
@@ -61,88 +95,174 @@ void draw_file_list(WINDOW *win);
 #define SAFE_STRNCPY(dest, src, size) strncpy((dest), (src), (size))
 #define SAFE_FREE_IF(cond, ptr) if ((cond) && (ptr)) { free((ptr)); (ptr) = NULL; }
 
-int prepare_display_wstring(const char *src, int max_visual_width, wchar_t *dest, size_t dest_size, int add_suffix, const wchar_t *ellipsis) {
+int prepare_middle_display_wstring(const char *src, int max_visual_width, wchar_t *dest, size_t dest_size, int add_suffix, const wchar_t *ellipsis) {
     if (!src || !dest || dest_size == 0) return -1;
     dest[0] = L'\0';
     if (strlen(src) == 0) return 0;
-    ellipsis = L"..";
-    mbstate_t state = {0};
-    size_t src_len = strlen(src);
-    wchar_t *wsrc = calloc(src_len + 1, sizeof(wchar_t));
-    if (!wsrc) return -1;
-
-    const char *ptr = src;
-    size_t wlen = mbsrtowcs(wsrc, &ptr, src_len + 1, &state);
-    if (wlen == (size_t)-1) {
-        free(wsrc);
-        wsrc = calloc(src_len + 1, sizeof(wchar_t));
-        if (!wsrc) return -1;
-        const char *p = src;
-        size_t idx = 0;
-        while (*p && idx < src_len) {
-            if ((unsigned char)*p <= 127) {
-                wsrc[idx++] = (wchar_t)(unsigned char)*p;
-            } else {
-                wsrc[idx++] = L'?';
-            }
-            p++;
-        }
-        wsrc[idx] = L'\0';
-        wlen = idx;
+    if (!ellipsis) ellipsis = L"..";
+    wchar_t *wsrc = NULL;
+    size_t wlen = 0;
+    if (convert_to_wchar(src, &wsrc, &wlen) != 0) return -1;
+    int total_width = 0;
+    for (size_t k = 0; k < wlen; k++) {
+        int w = wcwidth(wsrc[k]);
+        total_width += (w < 0 ? 1 : w);
     }
-
-    int current_width = 0;
+    if (total_width <= max_visual_width) {
+        wcsncpy(dest, wsrc, dest_size - 1);
+        dest[dest_size - 1] = L'\0';
+        free(wsrc);
+        return 0;
+    }
+    size_t ell_len = wcslen(ellipsis);
+    int ell_width = 0;
+    for (size_t j = 0; j < ell_len; j++) {
+        int w = wcwidth(ellipsis[j]);
+        ell_width += (w < 0 ? 1 : w);
+    }
+    int remaining_width = max_visual_width - ell_width;
+    if (remaining_width < 2) {
+        wcsncpy(dest, ellipsis, dest_size - 1);
+        dest[dest_size - 1] = L'\0';
+        free(wsrc);
+        return 0;
+    }
+    int front_width = remaining_width / 2;
+    int back_width = remaining_width - front_width;
     size_t dest_idx = 0;
+    int current_width = 0;
     size_t i = 0;
-while (i < wlen && dest_idx < dest_size - 1) {
+    while (i < wlen && dest_idx < dest_size - 1 && current_width < front_width) {
         int char_width = wcwidth(wsrc[i]);
         if (char_width < 0) char_width = 1;
-        if (current_width + char_width >= max_visual_width - 2) break;
-        dest[dest_idx++] = wsrc[i];
+        if (current_width + char_width > front_width) break;
+        dest[dest_idx++] = wsrc[i++];
         current_width += char_width;
-        i++;
+    }
+    for (size_t j = 0; j < ell_len && dest_idx < dest_size - 1; j++) {
+        dest[dest_idx++] = ellipsis[j];
+    }
+    current_width += ell_width;
+    size_t back_start = wlen;
+    int back_current = 0;
+    while (back_start > i && dest_idx < dest_size - 1 && back_current < back_width) {
+        back_start--;
+        int char_width = wcwidth(wsrc[back_start]);
+        if (char_width < 0) char_width = 1;
+        if (back_current + char_width > back_width) {
+            back_start++;
+            break;
+        }
+        back_current += char_width;
+    }
+    for (size_t k = back_start; k < wlen && dest_idx < dest_size - 1; k++) {
+        dest[dest_idx++] = wsrc[k];
     }
     dest[dest_idx] = L'\0';
-
-    if (i < wlen) {
-        if (ellipsis) {
-            size_t ell_len = wcslen(ellipsis);
-            int ell_width = 0;
-            for (size_t j = 0; j < ell_len; j++) {
-                int w = wcwidth(ellipsis[j]);
-                ell_width += (w < 0 ? 1 : w);
-            }
-            if (current_width + ell_width <= max_visual_width && dest_idx + ell_len < dest_size) {
-                wcscat(dest, ellipsis);
-                current_width += ell_width;
-            } else {
-                while (current_width + ell_width > max_visual_width && dest_idx > 0) {
-                    dest_idx--;
-                    int last_width = wcwidth(dest[dest_idx]);
-                    if (last_width < 0) last_width = 1;
-                    current_width -= last_width;
-                    dest[dest_idx] = L'\0';
-                }
-                if (current_width + ell_width <= max_visual_width && dest_idx + ell_len < dest_size) {
-                    wcscat(dest, ellipsis);
-                    current_width += ell_width;
-                }
-            }
-        }
-    }
-
     if (add_suffix) {
         wchar_t suffix = L'/';
         int suffix_width = wcwidth(suffix);
         if (suffix_width < 0) suffix_width = 1;
-        if (current_width + suffix_width <= max_visual_width && dest_idx + 1 < dest_size) {
+        if (current_width + back_current + suffix_width <= max_visual_width && dest_idx < dest_size - 1) {
             dest[dest_idx++] = suffix;
             dest[dest_idx] = L'\0';
         }
     }
-
     free(wsrc);
     return 0;
+}
+
+int prepare_display_wstring(const char *src, int max_visual_width, wchar_t *dest, size_t dest_size, int add_suffix, const wchar_t *ellipsis, int visual_offset) {
+    if (!src || !dest || dest_size == 0) return -1;
+    dest[0] = L'\0';
+    if (strlen(src) == 0) return 0;
+if (!ellipsis) ellipsis = L"..";
+wchar_t *wsrc = NULL;
+size_t wlen = 0;
+if (convert_to_wchar(src, &wsrc, &wlen) != 0) return -1;
+int total_width = 0;
+for (size_t k = 0; k < wlen; k++) {
+    int w = wcwidth(wsrc[k]);
+    total_width += (w < 0 ? 1 : w);
+}
+if (visual_offset < 0) visual_offset = 0;
+if (visual_offset > total_width) visual_offset = total_width;
+int current_offset = 0;
+size_t start_i = 0;
+while (start_i < wlen && current_offset < visual_offset) {
+    int char_width = wcwidth(wsrc[start_i]);
+    if (char_width < 0) char_width = 1;
+    current_offset += char_width;
+    start_i++;
+}
+if (current_offset > visual_offset && start_i > 0) {
+    start_i--;
+    current_offset -= wcwidth(wsrc[start_i]);
+}
+int remaining_width = max_visual_width;
+const wchar_t *start_ellipsis = NULL;
+size_t start_ell_len = 0;
+int start_ell_width = 0;
+if (visual_offset > 0) {
+    start_ellipsis = L"..";
+    start_ell_len = wcslen(start_ellipsis);
+    for (size_t j = 0; j < start_ell_len; j++) {
+        int w = wcwidth(start_ellipsis[j]);
+        start_ell_width += (w < 0 ? 1 : w);
+    }
+    if (start_ell_width <= remaining_width) {
+        remaining_width -= start_ell_width;
+    } else {
+        start_ellipsis = NULL;
+        start_ell_len = 0;
+        start_ell_width = 0;
+    }
+}
+size_t dest_idx = 0;
+int current_width = 0;
+if (start_ellipsis) {
+    for (size_t j = 0; j < start_ell_len && dest_idx < dest_size - 1; j++) {
+        dest[dest_idx++] = start_ellipsis[j];
+    }
+    current_width += start_ell_width;
+}
+size_t i = start_i;
+while (i < wlen && dest_idx < dest_size - 1) {
+    int char_width = wcwidth(wsrc[i]);
+    if (char_width < 0) char_width = 1;
+    if (current_width + char_width > remaining_width) break;
+    dest[dest_idx++] = wsrc[i++];
+    current_width += char_width;
+}
+dest[dest_idx] = L'\0';
+size_t last_slash = 0;
+for (size_t k = wlen - 1; k > 0; k--) {
+if (wsrc[k] == L'/') {
+last_slash = k;
+break;
+}
+}
+size_t last_start = last_slash + 1;
+int last_width = 0;
+for (size_t k = last_start; k < wlen; k++) {
+int w = wcwidth(wsrc[k]);
+last_width += (w < 0 ? 1 : w);
+}
+if (start_i >= last_start && last_width <= remaining_width) {
+start_i = last_start;
+}
+if (add_suffix) {
+    wchar_t suffix = L'/';
+    int suffix_width = wcwidth(suffix);
+    if (suffix_width < 0) suffix_width = 1;
+    int total_current_width = start_ell_width + current_width;
+    if (total_current_width + suffix_width <= max_visual_width && dest_idx < dest_size - 1) {
+        dest[dest_idx++] = suffix;
+        dest[dest_idx] = L'\0';
+    }
+}
+free(wsrc);
+return 0;
 }
 
 typedef struct {
@@ -236,35 +356,20 @@ static void print_formatted_time(WINDOW *win, int y, int x, int seconds) {
     int secs = seconds % 60;
     mvwprintw(win, y, x, "%02d:%02d:%02d", hours, mins, secs);
 }
-
+static void draw_fill_line(WINDOW *win, int start_y, int start_x, int length, const void *symbol, int is_horizontal, int is_wide);
 static void draw_progress_bar(WINDOW *win, int y, int start_x, double percent, int bar_length) {
     int filled = (int)((percent / 100.0) * bar_length + 0.5);
     wchar_t fill_char = SCROLL_FILLED;
     wchar_t empty_char = SCROLL_EMPTY;
-
-    if (percent > 0.0) {
-        wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
-    } else {
-        wattron(win, COLOR_PAIR(COLOR_PAIR_WHITE));
-    }
-    for (int i = 0; i < bar_length; i++) {
-        wmove(win, y, start_x + i);
-        waddnwstr(win, &empty_char, 1);
-    }
-    if (percent > 0.0) {
-        wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
-    } else {
-        wattroff(win, COLOR_PAIR(COLOR_PAIR_WHITE));
-    }
-
-    if (filled > 0) {
-        wattron(win, COLOR_PAIR(COLOR_PAIR_PROGRESS) | A_BOLD);
-        for (int i = 0; i < filled; i++) {
-            wmove(win, y, start_x + i);
-            waddnwstr(win, &fill_char, 1);
-        }
-        wattroff(win, COLOR_PAIR(COLOR_PAIR_PROGRESS) | A_BOLD);
-    }
+int color_empty = (percent > 0.0) ? COLOR_PAIR_BORDER : COLOR_PAIR_WHITE;
+wattron(win, COLOR_PAIR(color_empty));
+draw_fill_line(win, y, start_x, bar_length, &empty_char, 1, 1);
+wattroff(win, COLOR_PAIR(color_empty));
+if (filled > 0) {
+wattron(win, COLOR_PAIR(COLOR_PAIR_PROGRESS) | A_BOLD);
+    draw_fill_line(win, y, start_x, filled, &fill_char, 1, 1);
+wattroff(win, COLOR_PAIR(COLOR_PAIR_PROGRESS) | A_BOLD);
+}
 }
 static char status_msg[256] = "";
 static int show_status = 0;
@@ -282,6 +387,7 @@ int file_count = 0;
 int selected_index = 0;
 char current_dir[PATH_MAX];
 char root_dir[PATH_MAX] = {0};
+int path_visual_offset = 0;
 WINDOW *list_win = NULL;
 int term_height, term_width;
 static inline void refresh_ui(void)
@@ -315,8 +421,11 @@ static void free_str_array(char **arr, int count) {
 }
 
 void init_ncurses(const char *locale) {
-    setlocale(LC_ALL, locale);
-    initscr();
+if (setlocale(LC_ALL, locale) == NULL) {
+    fprintf(stderr, "Failed to set locale: %s — fallback to default\n", locale);
+    setlocale(LC_ALL, "");
+}
+initscr();
     cbreak();
     noecho();
     use_default_colors();
@@ -354,7 +463,7 @@ display_message(ERROR, "snd_pcm_hw_params_any failed");
     snd_pcm_hw_params_set_buffer_size_near(handle, params, &buffer_size_frames);
     int ret = snd_pcm_hw_params(handle, params);
     if (ret < 0) {
-  display_message(ERROR, "snd_pcm_hw_params failed: %s — audio disabled", snd_strerror(ret));
+        DISPLAY_ALSA_ERROR("snd_pcm_hw_params", ret);
         return -1;
     }
     return 0;
@@ -418,17 +527,17 @@ snd_pcm_t* init_audio_device(unsigned int rate, int channels) {
     snd_pcm_t *handle = NULL;
     int ret = snd_pcm_open(&handle, "default", SND_PCM_STREAM_PLAYBACK, 0);
     if (ret < 0) {
-  display_message(ERROR, "ALSA device open error: %s — audio disabled", snd_strerror(ret));
+        DISPLAY_ALSA_ERROR("ALSA device open error", ret);
         return NULL;
     }
     if (set_alsa_params(handle, rate, channels) < 0) {
-  display_message(ERROR, "set_alsa_params failed — audio disabled");
+    DISPLAY_ALSA_ERROR_NO_ERR("set_alsa_params failed");
         snd_pcm_close(handle);
         return NULL;
     }
     ret = snd_pcm_prepare(handle);
     if (ret < 0) {
-  display_message(ERROR, "snd_pcm_prepare failed: %s — audio disabled", snd_strerror(ret));
+        DISPLAY_ALSA_ERROR("snd_pcm_prepare", ret);
         snd_pcm_close(handle);
         return NULL;
     }
@@ -463,6 +572,19 @@ static void draw_fill_line(WINDOW *win, int start_y, int start_x, int length, co
         }
     }
 }
+
+static char *shorten_title(const char *title, int max_len) {
+    if (!title || max_len < 5) return strdup(title ? title : "");
+    size_t len = strlen(title);
+    if (len <= (size_t)max_len) return strdup(title);
+    int front_len = (max_len - 3) / 2;
+    int back_len = max_len - 3 - front_len;
+    char *shortened = malloc(max_len + 1);
+    if (!shortened) return NULL;
+    snprintf(shortened, max_len + 1, "%.*s...%s", front_len, title, title + len - back_len);
+    return shortened;
+}
+
 static void draw_single_frame(WINDOW *win, int start_y, int height, const char *title, int line_type)
 {
     int max_y, max_x;
@@ -486,7 +608,25 @@ static void draw_single_frame(WINDOW *win, int start_y, int height, const char *
     int title_start = (actual_width - title_len) / 2;
     if (title_start < 1) title_start = 1;
     if (title_start + title_len > actual_width - 1) title_start = actual_width - title_len - 1;
-    mvwprintw(win, start_y, title_start, "%s %s %s", title_left, title, title_right);
+char *short_title = shorten_title(title, actual_width - 4);
+if (short_title) {
+wchar_t wtitle[INNER_WIDTH + 1];
+  prepare_display_wstring(title, actual_width - 4, wtitle, sizeof(wtitle) / sizeof(wchar_t), 0, L"..", 0);
+int title_wlen = wcslen(wtitle);
+int title_width = 0;
+for (int i = 0; i < title_wlen; i++) {
+    int w = wcwidth(wtitle[i]);
+    title_width += (w < 0 ? 1 : w);
+}
+int title_len = title_width + 4;
+int title_start = (actual_width - title_len) / 2;
+if (title_start < 1) title_start = 1;
+if (title_start + title_len > actual_width - 1) title_start = actual_width - title_len - 1;
+mvwprintw(win, start_y, title_start, "%s ", title_left);
+mvwaddnwstr(win, start_y, title_start + 2, wtitle, title_wlen);
+mvwprintw(win, start_y, title_start + 2 + title_width, " %s", title_right);
+    free(short_title);
+}
     draw_fill_line(win, start_y + 1, 0, height - 2, vertical, 0, 0);
     draw_fill_line(win, start_y + 1, actual_width - 1, height - 2, vertical, 0, 0);
     mvwprintw(win, start_y + height - 1, 0, "%s", bottom_left);
@@ -513,7 +653,9 @@ void draw_help(WINDOW *win, int start_index) {
     const char *help_lines[] = {
     " a       load playlist from current directory",
     " b       -10 seconds",
+    " c       scroll path left",
     " d       from down (downward) — to scroll down similarly.",
+    " e       scroll path right",
     " f       +10 seconds",
     " h       this help",
     " l       toggle loop mode (enable/disable cyclic playback of file)",
@@ -561,7 +703,7 @@ void draw_help(WINDOW *win, int start_index) {
     const char *line = help_lines[i];
 int avail_width = max_x - 2;
 wchar_t wline[CURSOR_WIDTH + 4] = {0};
-prepare_display_wstring(line, avail_width, wline, sizeof(wline)/sizeof(wchar_t), 0, L"..");
+  prepare_display_wstring(line, avail_width, wline, sizeof(wline)/sizeof(wchar_t), 0, L"..", 0);
 mvwaddwstr(win, y++, 1, wline);
     }
     wnoutrefresh(win);
@@ -593,6 +735,18 @@ typedef struct PlayerControl {
     char *playlist_dir;
     int loop_mode;
 } PlayerControl;
+
+static void reset_playback_fields(PlayerControl *control) {
+    control->paused = 0;
+    control->is_silent = 0;
+    control->fading_in = 0;
+    control->fading_out = 0;
+    control->current_fade = FADE_STEPS;
+    control->bytes_read = 0LL;
+    control->duration = 0.0;
+    control->seek_delta = 0;
+}
+
 PlayerControl player_control;
 void top(WINDOW *win)
 {
@@ -608,7 +762,23 @@ void top(WINDOW *win)
     if (is_playlist_active) {
         wattron(win, COLOR_PAIR(COLOR_PAIR_BLUE));
     }
-    mvwprintw(win, 1, 2, "%s", path_display);
+wchar_t wpath[INNER_WIDTH + 1];
+int max_path_width = INNER_WIDTH - 4;
+wchar_t *wsrc_temp = NULL;
+size_t wlen_temp = 0;
+if (convert_to_wchar(path_display, &wsrc_temp, &wlen_temp) == 0) {
+    int total_width = 0;
+    for (size_t k = 0; k < wlen_temp; k++) {
+        int w = wcwidth(wsrc_temp[k]);
+        total_width += (w < 0 ? 1 : w);
+    }
+    int max_offset = total_width - max_path_width;
+    if (max_offset < 0) max_offset = 0;
+    if (path_visual_offset > max_offset) path_visual_offset = max_offset;
+    free(wsrc_temp);
+}
+prepare_display_wstring(path_display, max_path_width, wpath, sizeof(wpath)/sizeof(wchar_t), 0, L"..", path_visual_offset);
+mvwaddnwstr(win, 1, 2, wpath, wcslen(wpath));
     if (is_playlist_active) {
         wattroff(win, COLOR_PAIR(COLOR_PAIR_BLUE));
     }
@@ -636,7 +806,7 @@ PlayerControl player_control = {
 static int is_raw_file(const char *name) {
     if (!name) return 0;
     size_t len = strlen(name);
-    return (len >= 4) && (strcmp(name + len - 4, ".raw") == 0);
+return (len > 4) && (strcasecmp(name + len - 4, ".raw") == 0);
 }
 	char error_msg[256] = "";
 	static int show_error = 0;
@@ -676,7 +846,7 @@ void draw_field_frame(WINDOW *win)
     draw_single_frame(win, field_y, 3, title, 0);
     if (show_error) {
     wchar_t werror[256];
-    prepare_display_wstring(error_msg, actual_width - 4, werror, sizeof(werror)/sizeof(wchar_t), 0, L"..");
+      prepare_display_wstring(error_msg, actual_width - 4, werror, sizeof(werror)/sizeof(wchar_t), 0, L"..", 0);
 int error_len = wcswidth(werror, wcslen(werror));
 int ex = (actual_width - error_len) / 2;
 if (ex < 2) ex = 2;
@@ -700,7 +870,7 @@ wattroff(win, COLOR_PAIR(COLOR_PAIR_RED));
                      tm_info->tm_mday,
                      tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
 wchar_t wtime[128];
-prepare_display_wstring(time_str, actual_width - 4, wtime, sizeof(wtime)/sizeof(wchar_t), 0, L"..");
+prepare_display_wstring(time_str, actual_width - 4, wtime, sizeof(wtime)/sizeof(wchar_t), 0, L"..", 0);
 int time_len = wcswidth(wtime, wcslen(wtime));
 int tx = (actual_width - time_len) / 2;
 if (tx < 2) tx = 2;
@@ -710,7 +880,7 @@ mvwaddwstr(win, field_y + 1, tx, wtime);
 wattron(win, COLOR_PAIR(COLOR_PAIR_YELLOW));
 int status_width = actual_width - 4;
 wchar_t wstatus[256];
-prepare_display_wstring(status_msg, status_width, wstatus, sizeof(wstatus)/sizeof(wchar_t), 0, L"..");
+prepare_display_wstring(status_msg, status_width, wstatus, sizeof(wstatus)/sizeof(wchar_t), 0, L"..", 0);
 mvwaddwstr(win, field_y + 1, 2, wstatus);
 wattroff(win, COLOR_PAIR(COLOR_PAIR_YELLOW));
         } else {
@@ -789,6 +959,15 @@ void free_file_list(void) {
     selected_index = 0;
 }
 
+static int file_entry_cmp(const void *a, const void *b) {
+    const FileEntry *entry_a = (const FileEntry *)a;
+    const FileEntry *entry_b = (const FileEntry *)b;
+    if (entry_a->is_dir != entry_b->is_dir) {
+        return entry_b->is_dir - entry_a->is_dir;
+    }
+return strcasecmp(entry_a->name, entry_b->name);
+}
+
 void update_file_list(void) {
     free_file_list();
 int count = 0;
@@ -812,18 +991,7 @@ if (scan_directory(current_dir, 0, (void **)&entries, &count, 0) != 0) {
     free(entries);
     return;
 }
-for (int i = 0; i < count - 1; i++) {
-    for (int j = i + 1; j < count; j++) {
-        int a_dir = entries[i].is_dir;
-        int b_dir = entries[j].is_dir;
-        int cmp = strcmp(entries[i].name, entries[j].name);
-        if ((a_dir && !b_dir) || (a_dir == b_dir && cmp > 0)) {
-            FileEntry tmp = entries[i];
-            entries[i] = entries[j];
-            entries[j] = tmp;
-        }
-    }
-}
+qsort(entries, count, sizeof(FileEntry), file_entry_cmp);
 file_list = entries;
 file_count = count;
 selected_index = 0;
@@ -878,7 +1046,7 @@ char *playlist_dir = (player_control.playlist_dir) ? strdup(player_control.playl
             wattron(win, COLOR_PAIR(COLOR_PAIR_RED));
 	    const char* msg = file_list[0].name;
 wchar_t wmsg[CURSOR_WIDTH + 4] = {0};
-prepare_display_wstring(msg, CURSOR_WIDTH, wmsg, sizeof(wmsg)/sizeof(wchar_t), 0, L"..");
+prepare_display_wstring(msg, CURSOR_WIDTH, wmsg, sizeof(wmsg)/sizeof(wchar_t), 0, L"..", 0);
 mvwaddwstr(win, msg_row, 3, wmsg);
             wattroff(win, COLOR_PAIR(COLOR_PAIR_RED));
 	    if (current_file_name) free(current_file_name);
@@ -890,7 +1058,7 @@ mvwaddwstr(win, msg_row, 3, wmsg);
 	    if (!file_list[i].name) continue;
 	    int row = i - start_index + 4;
 wchar_t wname[CURSOR_WIDTH + 4] = {0};
-prepare_display_wstring(file_list[i].name, CURSOR_WIDTH, wname, sizeof(wname)/sizeof(wchar_t), file_list[i].is_dir, L"..");
+  prepare_display_wstring(file_list[i].name, CURSOR_WIDTH, wname, sizeof(wname)/sizeof(wchar_t), file_list[i].is_dir, L"..", 0);
 int printed = wcswidth(wname, wcslen(wname));
     if (i == selected_index) {
         wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
@@ -952,16 +1120,12 @@ draw_fill_line(win, row, 3 + printed, cursor_end - (3 + printed), &fill_ch2, 1, 
             if (scroll_pos > 4 + scroll_height - scroll_bar_height) scroll_pos = 4 + scroll_height - scroll_bar_height;
         }
         int bar_x = 2 + CURSOR_WIDTH + 1;
-        wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
-        for (int i = 4; i < max_y - 4; i++) {
-            if (i >= scroll_pos && i < scroll_pos + scroll_bar_height) {
-                mvwprintw(win, i, bar_x, "%lc", SCROLL_FILLED);
-            } else {
-                mvwprintw(win, i, bar_x, "%lc", SCROLL_EMPTY);
-            }
-        }
-
-        wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+wchar_t empty_char = SCROLL_EMPTY;
+wchar_t fill_char = SCROLL_FILLED;
+draw_fill_line(win, 4, bar_x, scroll_height, &empty_char, 0, 1);
+draw_fill_line(win, scroll_pos, bar_x, scroll_bar_height, &fill_char, 0, 1);
+wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
     }
 SAFE_FREE(playlist_dir);
 SAFE_FREE(current_file_name);
@@ -1047,7 +1211,7 @@ safe_cleanup_resources(&file, &handle, NULL, &control->current_filename);
         control->current_file = file;
 control->current_filename = (control->filename) ? SAFE_STRDUP(control->filename) : NULL;
 if (control->current_filename) {
-    control->is_silent = 0;
+                            control->is_silent = 0;
 	                    control->fading_in = 0;
 	                    control->fading_out = 0;
 	                    control->current_fade = FADE_STEPS;
@@ -1148,7 +1312,7 @@ if (!control->filename) {
                             safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
 		            control->playlist_mode = 0;
 		            control->duration = 0.0;
-control->bytes_read = 0LL;
+                            control->bytes_read = 0LL;
 		            pthread_mutex_unlock(&control->mutex);
 		            continue;
 		        }
@@ -1195,7 +1359,7 @@ play_audio(handle, buffer, actual_size);
             usleep(100000);
         }
     }
-safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
+    safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
     return NULL;
 }
 void perform_seek(PlayerControl *control, snd_pcm_t *handle)
@@ -1224,7 +1388,7 @@ void perform_seek(PlayerControl *control, snd_pcm_t *handle)
 	        return;
 	    }
 	    fseek(control->current_file, new_pos, SEEK_SET);
-control->bytes_read = new_pos;
+            control->bytes_read = new_pos;
 	    if (handle) {
 	        if (seek_bytes < 0) {
 	            snd_pcm_drop(handle);
@@ -1239,40 +1403,31 @@ control->bytes_read = new_pos;
 	    }
 	    control->seek_delta = 0;
 	}
-int playlist_cmp(const void *a, const void *b) {
+static int playlist_cmp(const void *a, const void *b) {
     const char *path_a = *(const char **)a;
-    const char *name_a = strrchr(path_a, '/');
-    if (name_a) {
-        name_a++;
-    } else {
-        name_a = path_a;
-    }
+    const char *name_a = strrchr(path_a, '/') ? strrchr(path_a, '/') + 1 : path_a;
     const char *path_b = *(const char **)b;
-    const char *name_b = strrchr(path_b, '/');
-    if (name_b) {
-        name_b++;
-    } else {
-        name_b = path_b;
-    }
-    return strcmp(name_a, name_b);
+    const char *name_b = strrchr(path_b, '/') ? strrchr(path_b, '/') + 1 : path_b;
+return strcasecmp(name_a, name_b);
 }
+
 void load_playlist(const char *dir_path, PlayerControl *control) {
     pthread_mutex_lock(&control->mutex);
     control->stop = 1;
     pthread_cond_signal(&control->cond);
     pthread_mutex_unlock(&control->mutex);
     pthread_mutex_lock(&control->mutex);
-	    struct timespec ts;
-	    clock_gettime(CLOCK_REALTIME, &ts);
-	    ts.tv_sec += 3;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 3;
 
-	    while (control->stop == 1) {
-	        int ret = pthread_cond_timedwait(&control->cond, &control->mutex, &ts);
-	        if (ret == ETIMEDOUT) {
-                display_message(ERROR, "Предупреждение: аудиопоток не отвечает — продолжаем без ожидания");
-	            break;
-	        }
-	    }
+    while (control->stop == 1) {
+        int ret = pthread_cond_timedwait(&control->cond, &control->mutex, &ts);
+        if (ret == ETIMEDOUT) {
+            display_message(ERROR, "Warning: audio stream not responding — continuing without waiting");
+            break;
+        }
+    }
     if (control->playlist) {
 SAFE_FREE(control->playlist_dir);
 control->playlist_dir = NULL;
@@ -1343,59 +1498,58 @@ int secs = (int)elapsed % 60;
         pthread_join(thread, NULL);
     }
 }
-void action_p(void)
+void action_p(PlayerControl *control)
 {
-    if (!player_control.current_file) {
+    if (!control->current_file) {
         display_message(STATUS, "Nothing to pause");
         return;
     }
-    if (player_control.paused) {
-        player_control.paused = 0;
-        player_control.is_silent = 0;
-        player_control.fading_in = 1;
-        player_control.current_fade = 0;
+    if (control->paused) {
+        control->paused = 0;
+        control->is_silent = 0;
+        control->fading_in = 1;
+        control->current_fade = 0;
         display_message(STATUS, "RESUMED (fading in)");
     } else {
-        player_control.paused = 1;
-        player_control.fading_out = 1;
-        player_control.current_fade = FADE_STEPS;
+        control->paused = 1;
+        control->fading_out = 1;
+        control->current_fade = FADE_STEPS;
         display_message(STATUS, "PAUSED (fading out)");
     }
 }
-void action_f(void) {
-    if (player_control.current_file) {
-        player_control.seek_delta = 10;
+void action_f(PlayerControl *control) {
+    if (control->current_file) {
+        control->seek_delta = 10;
     } else {
         display_message(STATUS, "Nothing to fast-forward");
     }
 }
-void action_b(void) {
-    if (player_control.current_file) {
-        player_control.seek_delta = -10;
+void action_b(PlayerControl *control) {
+    if (control->current_file) {
+        control->seek_delta = -10;
     } else {
         display_message(STATUS, "Nothing to rewind");
     }
 }
-void action_s(void) {
-    player_control.stop = 1;
-    player_control.duration = 0.0;
-    player_control.bytes_read = 0LL;
-    if (player_control.current_filename) {
-        free(player_control.current_filename);
-        player_control.current_filename = NULL;
+void action_s(PlayerControl *control) {
+    control->stop = 1;
+    control->duration = 0.0;
+    control->bytes_read = 0LL;
+    if (control->current_filename) {
+        free(control->current_filename);
+        control->current_filename = NULL;
     }
-    player_control.paused = 0;
-    player_control.playlist_mode = 0;
-    player_control.current_track = 0;
+    control->paused = 0;
+    control->playlist_mode = 0;
+    control->current_track = 0;
     display_message(STATUS, "Playback stopped");
 }
-void with_player_control_lock(void (*action)(void)) {
+void with_player_control_lock(void (*action)(PlayerControl *)) {
     pthread_mutex_lock(&player_control.mutex);
-    if (action) action();
+    if (action) action(&player_control);
     pthread_cond_signal(&player_control.cond);
     pthread_mutex_unlock(&player_control.mutex);
 }
-
 static void start_playback(const char *full_path, const char *file_name, int enable_loop) {
     if (!full_path || !file_name) return;
 
@@ -1418,15 +1572,8 @@ static void start_playback(const char *full_path, const char *file_name, int ena
     }
     player_control.playlist_mode = 0;
     player_control.current_track = 0;
-    player_control.paused = 0;
     player_control.loop_mode = enable_loop;
-    player_control.is_silent = 0;
-    player_control.fading_in = 0;
-    player_control.fading_out = 0;
-    player_control.current_fade = FADE_STEPS;
-    player_control.bytes_read = 0LL;
-    player_control.duration = 0.0;
-    player_control.seek_delta = 0;
+    reset_playback_fields(&player_control);
     pthread_cond_signal(&player_control.cond);
 
     if (player_control.current_filename) free(player_control.current_filename);
@@ -1495,7 +1642,7 @@ root_dir[sizeof(root_dir) - 2] = '\0';
 if (root_dir[0] != '\0' && root_dir[strlen(root_dir) - 1] != '/') {
     strcat(root_dir, "/");
 }
-atexit(free_forward_history);
+    free_forward_history();
     update_file_list();
     draw_file_list(list_win);
     refresh();
@@ -1731,14 +1878,7 @@ case 't': case 'T':
                     SAFE_FREE(player_control.current_filename);
 	                    player_control.current_track = 0;
 	                    player_control.playlist_mode = 1;
-	                    player_control.paused = 0;
-	                    player_control.is_silent = 0;
-	                    player_control.fading_in = 0;
-	                    player_control.fading_out = 0;
-	                    player_control.current_fade = FADE_STEPS;
-                            player_control.bytes_read = 0LL;
-	                    player_control.duration = 0.0;
-	                    player_control.seek_delta = 0;
+                            reset_playback_fields(&player_control);
 	                    pthread_cond_signal(&player_control.cond);
 	                    pthread_mutex_unlock(&player_control.mutex);
             }
@@ -1759,14 +1899,7 @@ SAFE_FREE(player_control.current_filename);
 player_control.current_filename = SAFE_STRDUP(basename(player_control.playlist[0]));
         player_control.current_track = 0;
         player_control.playlist_mode = 1;
-        player_control.paused = 0;
-        player_control.is_silent = 0;
-        player_control.fading_in = 0;
-        player_control.fading_out = 0;
-        player_control.current_fade = FADE_STEPS;
-        player_control.bytes_read = 0LL;
-        player_control.duration = 0.0;
-        player_control.seek_delta = 0;
+        reset_playback_fields(&player_control);
         pthread_cond_signal(&player_control.cond);
         pthread_mutex_unlock(&player_control.mutex);
     }
@@ -1774,13 +1907,13 @@ player_control.current_filename = SAFE_STRDUP(basename(player_control.playlist[0
 case 'l': case 'L':
     const char *selected_file_name = NULL;
 int is_different_file = 0;
-void check_different_file(void) {
+void check_different_file(PlayerControl *control) {
 if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name &&
 !file_list[selected_index].is_dir && is_raw_file(file_list[selected_index].name)) {
 selected_file_name = file_list[selected_index].name;
 }
 is_different_file = selected_file_name &&
-(!player_control.current_filename || strcmp(player_control.current_filename, selected_file_name) != 0);
+(!control->current_filename || strcmp(control->current_filename, selected_file_name) != 0);
 }
 with_player_control_lock(check_different_file);
 
@@ -1802,6 +1935,13 @@ if (is_different_file) {
         }
         pthread_mutex_unlock(&player_control.mutex);
     }
+break;
+case 'c':
+    path_visual_offset = (path_visual_offset - 5 > 0) ? path_visual_offset - 5 : 0;
+    break;
+case 'e':
+    path_visual_offset += 5;
+    break;
     break;
 }
 }
@@ -1833,20 +1973,19 @@ display_message(ERROR, "pthread_create failed — player disabled");
     if (have_player_thread) {
         shutdown_player_thread(&player_control, thread, &have_player_thread);
     }
-void cleanup_playlist_in_main(void) {
-if (player_control.playlist) {
-free_str_array(player_control.playlist, player_control.playlist_size);
-player_control.playlist = NULL;
-player_control.playlist_size = 0;
-player_control.playlist_capacity = 0;
-player_control.current_track = 0;
+void cleanup_playlist_in_main(PlayerControl *control) {
+if (control->playlist) {
+free_str_array(control->playlist, control->playlist_size);
+control->playlist = NULL;
+control->playlist_size = 0;
+control->playlist_capacity = 0;
+control->current_track = 0;
 }
-SAFE_FREE(player_control.playlist_dir);
+SAFE_FREE(control->playlist_dir);
 }
 with_player_control_lock(cleanup_playlist_in_main);
     pthread_mutex_destroy(&player_control.mutex);
     pthread_cond_destroy(&player_control.cond);
     return result;
 }
-// 1851
-// clear;gcc -Wall -Wextra -O2 -o tnapraw terminalNavigatorAudioPlayerRaw.c -lncursesw -lasound -pthread
+// 1991
