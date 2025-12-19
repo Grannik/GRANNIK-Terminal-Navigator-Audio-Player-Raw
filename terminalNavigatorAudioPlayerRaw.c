@@ -49,17 +49,19 @@ void draw_file_list(WINDOW *win);
 #define FRAME_SIZE (CHANNELS * 2)
 #define BUFFER_FRAMES 122
 #define STATUS_DURATION_SECONDS 5
-
+#define BYTES_PER_SECOND 176400LL
 #define SAFE_RETURN_IF_NULL(ptr, val) if (!(ptr)) { return (val); }
 #define SAFE_CONTINUE_IF_NULL(ptr) if (!(ptr)) { continue; }
 #define SAFE_ACTION_IF_NULL(ptr, ...) if (!(ptr)) { __VA_ARGS__; }
 #define SAFE_FREE_GENERIC(ptr, free_func, ...) if ((ptr)) { free_func((ptr), ##__VA_ARGS__); (ptr) = NULL; }
 #define SAFE_FREE(ptr) SAFE_FREE_GENERIC((ptr), free)
 #define SAFE_FREE_ARRAY(arr, count) SAFE_FREE_GENERIC((arr), free_names, (count), 0)
-#define SAFE_STRDUP(src) ({ char *dup = strdup((src)); dup; })
+#define SAFE_STRDUP(src) safe_strdup(src)
 #define SAFE_CALLOC(num, size) calloc((num), (size))
 #define SAFE_CLEANUP_RESOURCES(filep, handlep, pollfdsp, currfilep) safe_cleanup_resources((filep), (handlep), (pollfdsp), (currfilep))
 #define SAFE_STRNCPY(dest, src, size) do { strncpy((dest), (src), (size)); (dest)[(size)-1] = '\0'; } while (0)
+#define COLOR_ATTR_ON(win, attr) wattron(win, COLOR_PAIR(attr))
+#define COLOR_ATTR_OFF(win, attr) wattroff(win, COLOR_PAIR(attr))
 
 static int has_wide_chars(const wchar_t *w, size_t len)
 {
@@ -70,13 +72,276 @@ static int has_wide_chars(const wchar_t *w, size_t len)
     return 0;
 }
 
+static int is_double_width(wchar_t c) {
+    if ((c >= 0x1100 && c <= 0x115F) ||
+        (c >= 0x231A && c <= 0x231B) ||
+        (c >= 0x2329 && c <= 0x232A) ||
+        (c >= 0x23E9 && c <= 0x23EC) ||
+        (c >= 0x23F0 && c <= 0x23F0) ||
+        (c >= 0x23F3 && c <= 0x23F3) ||
+        (c >= 0x25FD && c <= 0x25FE) ||
+        (c >= 0x2614 && c <= 0x2615) ||
+        (c >= 0x2648 && c <= 0x2653) ||
+        (c >= 0x267F && c <= 0x267F) ||
+        (c >= 0x2693 && c <= 0x2693) ||
+        (c >= 0x26A1 && c <= 0x26A1) ||
+        (c >= 0x26AA && c <= 0x26AB) ||
+        (c >= 0x26BD && c <= 0x26BE) ||
+        (c >= 0x26C4 && c <= 0x26C5) ||
+        (c >= 0x26CE && c <= 0x26CE) ||
+        (c >= 0x26D4 && c <= 0x26D4) ||
+        (c >= 0x26EA && c <= 0x26EA) ||
+        (c >= 0x26F2 && c <= 0x26F3) ||
+        (c >= 0x26F5 && c <= 0x26F5) ||
+        (c >= 0x26FA && c <= 0x26FA) ||
+        (c >= 0x26FD && c <= 0x26FD) ||
+        (c >= 0x2705 && c <= 0x2705) ||
+        (c >= 0x270A && c <= 0x270B) ||
+        (c >= 0x2728 && c <= 0x2728) ||
+        (c >= 0x274C && c <= 0x274C) ||
+        (c >= 0x274E && c <= 0x274E) ||
+        (c >= 0x2753 && c <= 0x2755) ||
+        (c >= 0x2757 && c <= 0x2757) ||
+        (c >= 0x2795 && c <= 0x2797) ||
+        (c >= 0x27B0 && c <= 0x27B0) ||
+        (c >= 0x27BF && c <= 0x27BF) ||
+        (c >= 0x2B1B && c <= 0x2B1C) ||
+        (c >= 0x2B50 && c <= 0x2B50) ||
+        (c >= 0x2B55 && c <= 0x2B55) ||
+        (c >= 0x2E80 && c <= 0x2E99) ||
+        (c >= 0x2E9B && c <= 0x2EF3) ||
+        (c >= 0x2F00 && c <= 0x2FD5) ||
+        (c >= 0x3000 && c <= 0x3000) ||
+        (c >= 0x3001 && c <= 0x3003) ||
+        (c >= 0x3004 && c <= 0x3004) ||
+        (c >= 0x3005 && c <= 0x3005) ||
+        (c >= 0x3006 && c <= 0x3006) ||
+        (c >= 0x3007 && c <= 0x3007) ||
+        (c >= 0x3008 && c <= 0x3009) ||
+        (c >= 0x300A && c <= 0x300B) ||
+        (c >= 0x300C && c <= 0x300D) ||
+        (c >= 0x300E && c <= 0x300F) ||
+        (c >= 0x3010 && c <= 0x3011) ||
+        (c >= 0x3012 && c <= 0x3013) ||
+        (c >= 0x3014 && c <= 0x3015) ||
+        (c >= 0x3016 && c <= 0x3017) ||
+        (c >= 0x3018 && c <= 0x3019) ||
+        (c >= 0x301A && c <= 0x301B) ||
+        (c >= 0x3020 && c <= 0x3020) ||
+        (c >= 0x3021 && c <= 0x3029) ||
+        (c >= 0x302A && c <= 0x302D) ||
+        (c >= 0x302E && c <= 0x302F) ||
+        (c >= 0x3030 && c <= 0x3030) ||
+        (c >= 0x3031 && c <= 0x3035) ||
+        (c >= 0x3036 && c <= 0x3037) ||
+        (c >= 0x3038 && c <= 0x303A) ||
+        (c >= 0x303B && c <= 0x303B) ||
+        (c >= 0x303C && c <= 0x303C) ||
+        (c >= 0x303D && c <= 0x303D) ||
+        (c >= 0x303E && c <= 0x303E) ||
+        (c >= 0x3041 && c <= 0x3096) ||
+        (c >= 0x3099 && c <= 0x309A) ||
+        (c >= 0x309B && c <= 0x309C) ||
+        (c >= 0x309D && c <= 0x309E) ||
+        (c >= 0x309F && c <= 0x309F) ||
+        (c >= 0x30A0 && c <= 0x30A0) ||
+        (c >= 0x30A1 && c <= 0x30FA) ||
+        (c >= 0x30FB && c <= 0x30FB) ||
+        (c >= 0x30FC && c <= 0x30FE) ||
+        (c >= 0x30FF && c <= 0x30FF) ||
+        (c >= 0x3105 && c <= 0x312F) ||
+        (c >= 0x3131 && c <= 0x318E) ||
+        (c >= 0x3190 && c <= 0x3191) ||
+        (c >= 0x3192 && c <= 0x3195) ||
+        (c >= 0x3196 && c <= 0x319F) ||
+        (c >= 0x31A0 && c <= 0x31BF) ||
+        (c >= 0x31C0 && c <= 0x31E5) ||
+        (c >= 0x31EF && c <= 0x31EF) ||
+        (c >= 0x31F0 && c <= 0x31FF) ||
+        (c >= 0x3200 && c <= 0x321E) ||
+        (c >= 0x3220 && c <= 0x3229) ||
+        (c >= 0x322A && c <= 0x3247) ||
+        (c >= 0x3250 && c <= 0x3250) ||
+        (c >= 0x3251 && c <= 0x325F) ||
+        (c >= 0x3260 && c <= 0x327F) ||
+        (c >= 0x3280 && c <= 0x3289) ||
+        (c >= 0x328A && c <= 0x32B0) ||
+        (c >= 0x32B1 && c <= 0x32BF) ||
+        (c >= 0x32C0 && c <= 0x32FF) ||
+        (c >= 0x3300 && c <= 0x33FF) ||
+        (c >= 0x3400 && c <= 0x4DBF) ||
+        (c >= 0x4DC0 && c <= 0x4DFF) ||
+        (c >= 0x4E00 && c <= 0x9FFF) ||
+        (c >= 0xA000 && c <= 0xA014) ||
+        (c >= 0xA015 && c <= 0xA015) ||
+        (c >= 0xA016 && c <= 0xA48C) ||
+        (c >= 0xA490 && c <= 0xA4C6) ||
+        (c >= 0xAC00 && c <= 0xD7A3) ||
+        (c >= 0xF900 && c <= 0xFA6D) ||
+        (c >= 0xFA70 && c <= 0xFAD9) ||
+        (c >= 0xFE10 && c <= 0xFE16) ||
+        (c >= 0xFE17 && c <= 0xFE18) ||
+        (c >= 0xFE30 && c <= 0xFE30) ||
+        (c >= 0xFE31 && c <= 0xFE32) ||
+        (c >= 0xFE33 && c <= 0xFE34) ||
+        (c >= 0xFE35 && c <= 0xFE35) ||
+        (c >= 0xFE36 && c <= 0xFE36) ||
+        (c >= 0xFE37 && c <= 0xFE38) ||
+        (c >= 0xFE39 && c <= 0xFE3A) ||
+        (c >= 0xFE3B && c <= 0xFE3C) ||
+        (c >= 0xFE3D && c <= 0xFE3E) ||
+        (c >= 0xFE3F && c <= 0xFE40) ||
+        (c >= 0xFE41 && c <= 0xFE42) ||
+        (c >= 0xFE43 && c <= 0xFE44) ||
+        (c >= 0xFE45 && c <= 0xFE46) ||
+        (c >= 0xFE47 && c <= 0xFE48) ||
+        (c >= 0xFE49 && c <= 0xFE4C) ||
+        (c >= 0xFE4D && c <= 0xFE4F) ||
+        (c >= 0xFE50 && c <= 0xFE52) ||
+        (c >= 0xFE54 && c <= 0xFE57) ||
+        (c >= 0xFE58 && c <= 0xFE58) ||
+        (c >= 0xFE59 && c <= 0xFE5A) ||
+        (c >= 0xFE5B && c <= 0xFE5C) ||
+        (c >= 0xFE5D && c <= 0xFE5E) ||
+        (c >= 0xFE5F && c <= 0xFE61) ||
+        (c >= 0xFE62 && c <= 0xFE62) ||
+        (c >= 0xFE63 && c <= 0xFE63) ||
+        (c >= 0xFE64 && c <= 0xFE66) ||
+        (c >= 0xFE68 && c <= 0xFE68) ||
+        (c >= 0xFE69 && c <= 0xFE69) ||
+        (c >= 0xFE6A && c <= 0xFE6B) ||
+        (c >= 0xFF01 && c <= 0xFF03) ||
+        (c >= 0xFF04 && c <= 0xFF04) ||
+        (c >= 0xFF05 && c <= 0xFF07) ||
+        (c >= 0xFF08 && c <= 0xFF09) ||
+        (c >= 0xFF0A && c <= 0xFF0A) ||
+        (c >= 0xFF0B && c <= 0xFF0B) ||
+        (c >= 0xFF0C && c <= 0xFF0C) ||
+        (c >= 0xFF0D && c <= 0xFF0D) ||
+        (c >= 0xFF0E && c <= 0xFF0F) ||
+        (c >= 0xFF10 && c <= 0xFF19) ||
+        (c >= 0xFF1A && c <= 0xFF1B) ||
+        (c >= 0xFF1C && c <= 0xFF1E) ||
+        (c >= 0xFF1F && c <= 0xFF20) ||
+        (c >= 0xFF21 && c <= 0xFF3A) ||
+        (c >= 0xFF3B && c <= 0xFF3B) ||
+        (c >= 0xFF3C && c <= 0xFF3C) ||
+        (c >= 0xFF3D && c <= 0xFF3D) ||
+        (c >= 0xFF3E && c <= 0xFF3E) ||
+        (c >= 0xFF3F && c <= 0xFF3F) ||
+        (c >= 0xFF40 && c <= 0xFF40) ||
+        (c >= 0xFF41 && c <= 0xFF5A) ||
+        (c >= 0xFF5B && c <= 0xFF5B) ||
+        (c >= 0xFF5C && c <= 0xFF5C) ||
+        (c >= 0xFF5D && c <= 0xFF5D) ||
+        (c >= 0xFF5E && c <= 0xFF5E) ||
+        (c >= 0xFF5F && c <= 0xFF5F) ||
+        (c >= 0xFF60 && c <= 0xFF60) ||
+        (c >= 0xFF61 && c <= 0xFF61) ||
+        (c >= 0xFF62 && c <= 0xFF62) ||
+        (c >= 0xFF63 && c <= 0xFF63) ||
+        (c >= 0xFF64 && c <= 0xFF65) ||
+        (c >= 0xFF66 && c <= 0xFF6F) ||
+        (c >= 0xFF70 && c <= 0xFF70) ||
+        (c >= 0xFF71 && c <= 0xFF9D) ||
+        (c >= 0xFF9E && c <= 0xFF9F) ||
+        (c >= 0xFFA0 && c <= 0xFFBE) ||
+        (c >= 0xFFC2 && c <= 0xFFC7) ||
+        (c >= 0xFFCA && c <= 0xFFCF) ||
+        (c >= 0xFFD2 && c <= 0xFFD7) ||
+        (c >= 0xFFDA && c <= 0xFFDC) ||
+        (c >= 0xFFE0 && c <= 0xFFE1) ||
+        (c >= 0xFFE2 && c <= 0xFFE2) ||
+        (c >= 0xFFE3 && c <= 0xFFE3) ||
+        (c >= 0xFFE4 && c <= 0xFFE4) ||
+        (c >= 0xFFE5 && c <= 0xFFE6) ||
+        (c >= 0x1AFF0 && c <= 0x1AFF3) ||
+        (c >= 0x1AFF5 && c <= 0x1AFFB) ||
+        (c >= 0x1AFFD && c <= 0x1AFFE) ||
+        (c >= 0x1B000 && c <= 0x1B122) ||
+        (c >= 0x1B132 && c <= 0x1B132) ||
+        (c >= 0x1B150 && c <= 0x1B152) ||
+        (c >= 0x1B155 && c <= 0x1B155) ||
+        (c >= 0x1B164 && c <= 0x1B167) ||
+        (c >= 0x1B170 && c <= 0x1B2FB) ||
+        (c >= 0x1D300 && c <= 0x1D356) ||
+        (c >= 0x1D360 && c <= 0x1D376) ||
+        (c >= 0x1F004 && c <= 0x1F004) ||
+        (c >= 0x1F0CF && c <= 0x1F0CF) ||
+        (c >= 0x1F18E && c <= 0x1F18E) ||
+        (c >= 0x1F191 && c <= 0x1F19A) ||
+        (c >= 0x1F1E6 && c <= 0x1F1FF) ||
+        (c >= 0x1F200 && c <= 0x1F202) ||
+        (c >= 0x1F210 && c <= 0x1F23B) ||
+        (c >= 0x1F240 && c <= 0x1F248) ||
+        (c >= 0x1F250 && c <= 0x1F251) ||
+        (c >= 0x1F260 && c <= 0x1F265) ||
+        (c >= 0x1F300 && c <= 0x1F320) ||
+        (c >= 0x1F32D && c <= 0x1F335) ||
+        (c >= 0x1F337 && c <= 0x1F37C) ||
+        (c >= 0x1F37E && c <= 0x1F393) ||
+        (c >= 0x1F3A0 && c <= 0x1F3CA) ||
+        (c >= 0x1F3CF && c <= 0x1F3D3) ||
+        (c >= 0x1F3E0 && c <= 0x1F3F0) ||
+        (c >= 0x1F3F4 && c <= 0x1F3F4) ||
+        (c >= 0x1F3F8 && c <= 0x1F43E) ||
+        (c >= 0x1F440 && c <= 0x1F440) ||
+        (c >= 0x1F442 && c <= 0x1F4FC) ||
+        (c >= 0x1F4FF && c <= 0x1F53D) ||
+        (c >= 0x1F54B && c <= 0x1F54E) ||
+        (c >= 0x1F550 && c <= 0x1F567) ||
+        (c >= 0x1F57A && c <= 0x1F57A) ||
+        (c >= 0x1F595 && c <= 0x1F596) ||
+        (c >= 0x1F5A4 && c <= 0x1F5A4) ||
+        (c >= 0x1F5FB && c <= 0x1F64F) ||
+        (c >= 0x1F680 && c <= 0x1F6C5) ||
+        (c >= 0x1F6CC && c <= 0x1F6CC) ||
+        (c >= 0x1F6D0 && c <= 0x1F6D2) ||
+        (c >= 0x1F6D5 && c <= 0x1F6D7) ||
+        (c >= 0x1F6DC && c <= 0x1F6DF) ||
+        (c >= 0x1F6EB && c <= 0x1F6EC) ||
+        (c >= 0x1F6F4 && c <= 0x1F6FC) ||
+        (c >= 0x1F7E0 && c <= 0x1F7EB) ||
+        (c >= 0x1F7F0 && c <= 0x1F7F0) ||
+        (c >= 0x1F90C && c <= 0x1F93A) ||
+        (c >= 0x1F93C && c <= 0x1F945) ||
+        (c >= 0x1F947 && c <= 0x1F9FF) ||
+        (c >= 0x1FA70 && c <= 0x1FA7C) ||
+        (c >= 0x1FA80 && c <= 0x1FA88) ||
+        (c >= 0x1FA90 && c <= 0x1FABD) ||
+        (c >= 0x1FABF && c <= 0x1FAC5) ||
+        (c >= 0x1FACE && c <= 0x1FADB) ||
+        (c >= 0x1FAE0 && c <= 0x1FAE8) ||
+        (c >= 0x1FAF0 && c <= 0x1FAF8) ||
+        (c >= 0x20000 && c <= 0x2A6DF) ||
+        (c >= 0x2A700 && c <= 0x2B739) ||
+        (c >= 0x2B740 && c <= 0x2B81D) ||
+        (c >= 0x2B820 && c <= 0x2CEA1) ||
+        (c >= 0x2CEB0 && c <= 0x2EBE0) ||
+        (c >= 0x2EBF0 && c <= 0x2EE5D) ||
+        (c >= 0x2F800 && c <= 0x2FA1D) ||
+        (c >= 0x30000 && c <= 0x3134A) ||
+        (c >= 0x31350 && c <= 0x323AF)) {
+        return 1;
+    }
+    return 0;
+}
+
 static inline int safe_wcwidth(wchar_t c) {
     int w = wcwidth(c);
-    return w < 0 ? 1 : w;
+    if (w < 0) {
+        if (is_double_width(c)) return 2;
+        else return 1;
+    }
+    return w;
 }
 
 int convert_to_wchar(const char *src, wchar_t **wsrc_out, size_t *wlen_out) {
-    if (!src || !wsrc_out || !wlen_out) return -1;
+    if (!src || !wsrc_out || !wlen_out) {
+        if (wsrc_out) *wsrc_out = NULL;
+        if (wlen_out) *wlen_out = 0;
+        return -1;
+    }
     size_t src_len = strlen(src);
     wchar_t *wsrc = calloc(src_len + 1, sizeof(wchar_t));
     if (!wsrc) return -1;
@@ -104,6 +369,8 @@ int convert_to_wchar(const char *src, wchar_t **wsrc_out, size_t *wlen_out) {
     *wlen_out = wlen;
     return 0;
 }
+
+static int calculate_visual_width(const char *src);
 static int calculate_visual_width(const char *src);
 int prepare_display_wstring(const char *src, int max_visual_width, wchar_t *dest, size_t dest_size, int add_suffix, const wchar_t *ellipsis, int visual_offset, int use_middle_ellipsis) {
     if (!src || !dest || dest_size == 0) return -1;
@@ -221,7 +488,7 @@ static int calculate_visual_width(const char *src) {
     for (size_t k = 0; k < wlen; k++) {
 total_width += safe_wcwidth(wsrc[k]);
     }
-    free(wsrc);
+SAFE_FREE(wsrc);
     return total_width;
 }
 
@@ -229,39 +496,50 @@ typedef struct {
     char *name;
     int is_dir;
 } FileEntry;
-
+static char *safe_strdup(const char *src);
+static void display_message(int type, const char *fmt, ...);
+static void memory_error(void) {
+    display_message(ERROR, "Out of memory");
+}
 static int is_raw_file(const char *name);
 __attribute__((unused)) static char *xasprintf(const char *fmt, ...);
-static void display_message(int type, const char *fmt, ...);
+static void free_names(void *entries, int count, int is_file_entry);
 static int scan_directory(const char *dir_path, int filter_raw, void **entries_out, int *count_out, int for_playlist) {
     DIR *dir = opendir(dir_path);
     if (!dir) {
         return -1;
     }
-    int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir))) {
-        if (entry->d_name[0] == '.') continue;
-        if (filter_raw && !is_raw_file(entry->d_name)) continue;
-        count++;
-    }
-    rewinddir(dir);
+struct dirent *entry;
+int count = 0;
+while ((entry = readdir(dir))) {
+    if (entry->d_name[0] == '.') continue;
+    if (filter_raw && !is_raw_file(entry->d_name)) continue;
+    count++;
+}
+rewinddir(dir);
     if (count == 0) {
         closedir(dir);
         return 0;
     }
-    void *entries;
-    if (for_playlist) {
-        entries = calloc(count, sizeof(char *));
-    } else {
-        entries = calloc(count, sizeof(FileEntry));
-    }
+    size_t entry_size = for_playlist ? sizeof(char *) : sizeof(FileEntry);
+    size_t capacity = 16;
+    void *entries = calloc(capacity, entry_size);
     if (!entries) {
         closedir(dir);
         return -1;
     }
-    int idx = 0;
-    while ((entry = readdir(dir)) && idx < count) {
+size_t idx = 0;
+    while ((entry = readdir(dir))) {
+        if (idx >= capacity) {
+            capacity *= 2;
+            void *new_entries = realloc(entries, capacity * entry_size);
+            if (!new_entries) {
+                free_names(entries, idx, !for_playlist);
+                closedir(dir);
+                return -1;
+            }
+            entries = new_entries;
+        }
         if (entry->d_name[0] == '.') continue;
         if (filter_raw && !is_raw_file(entry->d_name)) continue;
         char *name = strdup(entry->d_name);
@@ -279,7 +557,7 @@ static int scan_directory(const char *dir_path, int filter_raw, void **entries_o
             continue;
         }
         free(full_path);
-        full_path = strdup(resolved_path);
+	        full_path = safe_strdup(resolved_path);
         if (!full_path) {
             free(name);
             continue;
@@ -303,7 +581,9 @@ static int scan_directory(const char *dir_path, int filter_raw, void **entries_o
 
 static char *safe_strdup(const char *src) {
     if (!src) return NULL;
-    return strdup(src);
+	    char *dup = strdup(src);
+	    if (!dup) memory_error();
+	    return dup;
 }
 
 static void print_formatted_time(WINDOW *win, int y, int x, int seconds) {
@@ -326,12 +606,12 @@ static void draw_progress_bar(WINDOW *win, int y, int start_x, double percent, i
     wchar_t empty_char = SCROLL_EMPTY;
 int color_empty = (percent > 0.0) ? COLOR_PAIR_BORDER : COLOR_PAIR_WHITE;
 wattron(win, COLOR_PAIR(color_empty));
+COLOR_ATTR_ON(win, color_empty);
 draw_fill_line(win, y, start_x, bar_length, &empty_char, 1, 1);
-wattroff(win, COLOR_PAIR(color_empty));
 if (filled > 0) {
-wattron(win, COLOR_PAIR(COLOR_PAIR_PROGRESS) | A_BOLD);
-    draw_fill_line(win, y, start_x, filled, &fill_char, 1, 1);
-wattroff(win, COLOR_PAIR(COLOR_PAIR_PROGRESS) | A_BOLD);
+COLOR_ATTR_ON(win, COLOR_PAIR_PROGRESS | A_BOLD);
+draw_fill_line(win, y, start_x, filled, &fill_char, 1, 1);
+COLOR_ATTR_OFF(win, COLOR_PAIR_PROGRESS | A_BOLD);
 }
 }
 static char status_msg[256] = "";
@@ -363,12 +643,13 @@ static inline void refresh_ui(void)
 char **forward_history = NULL;
 int forward_count = 0;
 int forward_capacity = 10;
-__attribute__((unused)) static char *xasprintf(const char *fmt, ...)
+static char *xasprintf(const char *fmt, ...)
 {
     char *res = NULL;
     va_list ap;
     va_start(ap, fmt);
     if (vasprintf(&res, fmt, ap) == -1) {
+memory_error();
         res = NULL;
     }
     va_end(ap);
@@ -395,10 +676,14 @@ void init_ncurses(const char *locale) {
 if (setlocale(LC_ALL, locale) == NULL) {
     fprintf(stderr, "Failed to set locale: %s — fallback to default\n", locale);
     if (setlocale(LC_ALL, "") == NULL) {
-fprintf(stderr, "Failed to set default locale — fallback to C.UTF-8\n");
-setlocale(LC_ALL, "C.UTF-8");
+        fprintf(stderr, "Failed to set default locale — fallback to C.UTF-8\n");
+        if (setlocale(LC_ALL, "C.UTF-8") == NULL) {
+            fprintf(stderr, "Failed to set C.UTF-8 — using C locale\n");
+            setlocale(LC_ALL, "C");
+        }
     }
 }
+
 initscr();
     cbreak();
     noecho();
@@ -416,6 +701,7 @@ initscr();
         init_pair(COLOR_PAIR_PROGRESS, COLOR_GREEN, COLOR_BLACK);
     }
 }
+static int setup_alsa_hw_params(snd_pcm_t *handle, snd_pcm_hw_params_t *params, unsigned int *rate, int channels, snd_pcm_uframes_t *period_size, snd_pcm_uframes_t *buffer_size);
 int set_alsa_params(snd_pcm_t *handle, unsigned int rate, int channels) {
     if (!handle) {
 display_message(ERROR, "Invalid handle in set_alsa_params — audio disabled");
@@ -423,21 +709,9 @@ display_message(ERROR, "Invalid handle in set_alsa_params — audio disabled");
     }
     snd_pcm_hw_params_t *params;
     snd_pcm_hw_params_alloca(&params);
-    if (snd_pcm_hw_params_any(handle, params) < 0) {
-display_message(ERROR, "snd_pcm_hw_params_any failed — audio disabled");
-        return -1;
-    }
-    snd_pcm_hw_params_set_access(handle, params, SND_PCM_ACCESS_RW_INTERLEAVED);
-    snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16_LE);
-    snd_pcm_hw_params_set_channels(handle, params, channels);
-    snd_pcm_hw_params_set_rate_near(handle, params, &rate, 0);
     snd_pcm_uframes_t period_size = 256;
-    snd_pcm_hw_params_set_period_size_near(handle, params, &period_size, 0);
-    snd_pcm_uframes_t buffer_size_frames = 1024;
-    snd_pcm_hw_params_set_buffer_size_near(handle, params, &buffer_size_frames);
-    int ret = snd_pcm_hw_params(handle, params);
-    if (ret < 0) {
-display_message(ERROR, "snd_pcm_hw_params failed: %s — audio disabled", snd_strerror(ret));
+    snd_pcm_uframes_t buffer_size = 1024;
+    if (setup_alsa_hw_params(handle, params, &rate, channels, &period_size, &buffer_size) < 0) {
         return -1;
     }
     return 0;
@@ -497,38 +771,74 @@ static void safe_cleanup_resources(FILE **file, snd_pcm_t **handle, struct pollf
     if (poll_fds && *poll_fds) { free(*poll_fds); *poll_fds = NULL; }
     if (current_filename && *current_filename) { free(*current_filename); *current_filename = NULL; }
 }
+
+static void alsa_error(const char *msg, const char *err) {
+    if (err) {
+        display_message(ERROR, "%s: %s — audio disabled", msg, err);
+    } else {
+        display_message(ERROR, "%s — audio disabled", msg);
+    }
+}
+
+static int setup_alsa_hw_params(snd_pcm_t *handle, snd_pcm_hw_params_t *params, unsigned int *rate, int channels, snd_pcm_uframes_t *period_size, snd_pcm_uframes_t *buffer_size) {
+    int ret;
+    int dir = 0;
+    if ((ret = snd_pcm_hw_params_any(handle, params)) < 0) {
+        alsa_error("snd_pcm_hw_params_any failed", snd_strerror(ret));
+        return -1;
+    }
+    if ((ret = snd_pcm_hw_params_set_access(handle, params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
+        alsa_error("snd_pcm_hw_params_set_access failed", snd_strerror(ret));
+        return -1;
+    }
+    if ((ret = snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16_LE)) < 0) {
+        alsa_error("snd_pcm_hw_params_set_format failed", snd_strerror(ret));
+        return -1;
+    }
+    if ((ret = snd_pcm_hw_params_set_channels(handle, params, channels)) < 0) {
+        alsa_error("snd_pcm_hw_params_set_channels failed", snd_strerror(ret));
+        return -1;
+    }
+    if ((ret = snd_pcm_hw_params_set_rate_near(handle, params, rate, &dir)) < 0) {
+        alsa_error("snd_pcm_hw_params_set_rate_near failed", snd_strerror(ret));
+        return -1;
+    }
+    if ((ret = snd_pcm_hw_params_set_period_size_near(handle, params, period_size, &dir)) < 0) {
+        alsa_error("snd_pcm_hw_params_set_period_size_near failed", snd_strerror(ret));
+        return -1;
+    }
+    if ((ret = snd_pcm_hw_params_set_buffer_size_near(handle, params, buffer_size)) < 0) {
+        alsa_error("snd_pcm_hw_params_set_buffer_size_near failed", snd_strerror(ret));
+        return -1;
+    }
+    if ((ret = snd_pcm_hw_params(handle, params)) < 0) {
+        alsa_error("snd_pcm_hw_params failed", snd_strerror(ret));
+        return -1;
+    }
+    return 0;
+}
+
 snd_pcm_t* init_audio_device(unsigned int rate, int channels) {
     snd_pcm_t *handle = NULL;
     int ret = snd_pcm_open(&handle, "default", SND_PCM_STREAM_PLAYBACK, 0);
     if (ret < 0) {
-display_message(ERROR, "ALSA device open error: %s — audio disabled", snd_strerror(ret));
+alsa_error("ALSA device open error", snd_strerror(ret));
         return NULL;
     }
     if (set_alsa_params(handle, rate, channels) < 0) {
-display_message(ERROR, "set_alsa_params failed — audio disabled");
+alsa_error("ALSA params setup failed", NULL);
         snd_pcm_close(handle);
         return NULL;
     }
     ret = snd_pcm_prepare(handle);
     if (ret < 0) {
-display_message(ERROR, "snd_pcm_prepare failed: %s — audio disabled", snd_strerror(ret));
+alsa_error("snd_pcm_prepare failed", snd_strerror(ret));
         snd_pcm_close(handle);
         return NULL;
     }
     return handle;
 }
 static void draw_single_frame(WINDOW *win, int start_y, int height, const char *title, int line_type);
-void draw_outer_frame(WINDOW *win, int rows, int cols, int headers_only) {
-if (cols < MIN_WIDTH) {
-    return;
-}
-    if (headers_only) {
-        return;
-    }
-draw_single_frame(win, 0, rows, "GRANNIK | COMPLEX SOFTWARE ECOSYSTEM | FILE NAVIGATOR RAW", 1);
-    wnoutrefresh(win);
-    doupdate();
-}
 static void draw_fill_line(WINDOW *win, int start_y, int start_x, int length, const void *symbol, int is_horizontal, int is_wide) {
     for (int i = 0; i < length; i++) {
         if (is_horizontal) {
@@ -555,15 +865,13 @@ static char *shorten_title(const char *title, int max_len) {
     int back_len = max_len - 3 - front_len;
     char *shortened = malloc(max_len + 1);
     if (!shortened) return NULL;
-    snprintf(shortened, max_len + 1, "%.*s...%s", front_len, title, title + len - back_len);
+snprintf(shortened, max_len + 1, "%.*s...%s", front_len, title, title + len - back_len);
     return shortened;
 }
 
 static void draw_single_frame(WINDOW *win, int start_y, int height, const char *title, int line_type)
 {
-    int max_y, max_x;
-    getmaxyx(win, max_y, max_x);
-    (void)max_y;
+    int max_x = getmaxx(win);
     int fixed_width = line_type ? OUTER_FRAME_WIDTH : FILE_LIST_FIXED_WIDTH;
     int actual_width = (max_x < fixed_width) ? max_x : fixed_width;
     wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
@@ -779,25 +1087,22 @@ PlayerControl player_control = {
     .is_silent = 0, .fading_out = 0, .fading_in = 0, .current_fade = FADE_STEPS,
 .playlist_dir = NULL,
 };
-static int case_insensitive_compare(const char *s1, const char *s2) {
-    return strcasecmp(s1, s2);
-}
 static int is_raw_file(const char *name) {
     if (!name) return 0;
     size_t len = strlen(name);
-    return (len > 4) && (case_insensitive_compare(name + len - 4, ".raw") == 0);
+    return (len > 4) && (strcasecmp(name + len - 4, ".raw") == 0);
 }
 	char error_msg[256] = "";
 	static int show_error = 0;
         static int error_toggle = 0;
 	static int system_time_toggle = 0;
+
 static void display_message(int type, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
     char temp_msg[256];
     vsnprintf(temp_msg, sizeof(temp_msg), fmt, ap);
-    va_end(ap);
     char *msg = (type == ERROR) ? error_msg : status_msg;
     size_t msg_size = sizeof(error_msg);
     strncpy(msg, temp_msg, msg_size);
@@ -807,6 +1112,7 @@ static void display_message(int type, const char *fmt, ...)
         show_status = 1;
         status_start_time = time(NULL);
     }
+    va_end(ap);
 }
 
 void draw_field_frame(WINDOW *win)
@@ -1122,12 +1428,12 @@ draw_fill_line(win, row, 3 + printed, cursor_end - (3 + printed), &fill_ch2, 1, 
             if (scroll_pos > 4 + scroll_height - scroll_bar_height) scroll_pos = 4 + scroll_height - scroll_bar_height;
         }
         int bar_x = 2 + CURSOR_WIDTH + 1;
-wattron(win, COLOR_PAIR(COLOR_PAIR_BORDER));
 wchar_t empty_char = SCROLL_EMPTY;
 wchar_t fill_char = SCROLL_FILLED;
+COLOR_ATTR_ON(win, COLOR_PAIR_BORDER);
 draw_fill_line(win, 4, bar_x, scroll_height, &empty_char, 0, 1);
 draw_fill_line(win, scroll_pos, bar_x, scroll_bar_height, &fill_char, 0, 1);
-wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
+COLOR_ATTR_OFF(win, COLOR_PAIR_BORDER);
     }
 SAFE_FREE(playlist_dir);
 SAFE_FREE(current_file_name);
@@ -1193,7 +1499,7 @@ safe_cleanup_resources(&file, &handle, NULL, &control->current_filename);
         struct stat st;
         if (fstat(fileno(file), &st) == 0) {
             long file_size = st.st_size;
-            control->duration = (double)file_size / 176400.0;
+control->duration = (double)file_size / BYTES_PER_SECOND;
             control->bytes_read = 0LL;
         } else {
             control->duration = 0.0;
@@ -1372,14 +1678,13 @@ void perform_seek(PlayerControl *control, snd_pcm_t *handle)
 	    }
 	    if (control->seek_delta == 0 || !control->current_file)
 	        return;
-	    long long bytes_per_second = 176400LL;
-	    long long seek_bytes = (long long)control->seek_delta * bytes_per_second;
+            long long seek_bytes = (long long)control->seek_delta * BYTES_PER_SECOND;
 	    long long current_pos = ftell(control->current_file);
 	    long long new_pos = current_pos + seek_bytes;
 	    if (new_pos < 0)
 	        new_pos = 0;
 	    if (control->duration > 0.0) {
-	        long long max_bytes = (long long)(control->duration * 176400.0);
+            long long max_bytes = (long long)(control->duration * BYTES_PER_SECOND);
 	        if (new_pos > max_bytes)
 	            new_pos = max_bytes;
 	    }
@@ -1410,7 +1715,7 @@ static int playlist_cmp(const void *a, const void *b) {
     const char *name_a = strrchr(path_a, '/') ? strrchr(path_a, '/') + 1 : path_a;
     const char *path_b = *(const char **)b;
     const char *name_b = strrchr(path_b, '/') ? strrchr(path_b, '/') + 1 : path_b;
-    return case_insensitive_compare(name_a, name_b);
+    return strcasecmp(name_a, name_b);
 }
 
 void load_playlist(const char *dir_path, PlayerControl *control) {
@@ -1460,7 +1765,7 @@ if (control->playlist_size > 0 && control->playlist[0]) {
     if (control->filename) free(control->filename);
     control->filename = strdup(control->playlist[0]);
     pthread_cond_signal(&control->cond);
-    control->playlist_dir = strdup(dir_path);
+    control->playlist_dir = safe_strdup(dir_path);
 }
 pthread_mutex_unlock(&control->mutex);
 }
@@ -1469,6 +1774,7 @@ void shutdown_player_thread(PlayerControl *control, pthread_t thread, int *have_
     if (!*have_player_thread) return;
     lock_and_signal(control, NULL);
     control->quit = 1;
+
     int has_active_file = 0;
     pthread_mutex_lock(&control->mutex);
     has_active_file = (control->current_filename != NULL);
@@ -1486,7 +1792,7 @@ void shutdown_player_thread(PlayerControl *control, pthread_t thread, int *have_
             }
         }
         if (!joined) {
-double elapsed = (double)control->bytes_read / 176400.0;
+double elapsed = (double)control->bytes_read / BYTES_PER_SECOND;
 int hours = (int)elapsed / 3600;
 int mins = ((int)elapsed % 3600) / 60;
 int secs = (int)elapsed % 60;
@@ -1558,7 +1864,7 @@ static void start_playback(const char *full_path, const char *file_name, int ena
 
     pthread_mutex_lock(&player_control.mutex);
     if (player_control.filename) free(player_control.filename);
-    player_control.filename = strdup(full_path);
+	    player_control.filename = safe_strdup(full_path);
     if (!player_control.filename) {
         display_message(STATUS, "Out of memory! Cannot play file.");
         pthread_mutex_unlock(&player_control.mutex);
@@ -1570,8 +1876,7 @@ static void start_playback(const char *full_path, const char *file_name, int ena
     pthread_cond_signal(&player_control.cond);
 
     if (player_control.current_filename) free(player_control.current_filename);
-    player_control.current_filename = strdup(file_name);
-
+	    player_control.current_filename = safe_strdup(file_name);
     if (enable_loop) {
         display_message(STATUS, "Playback started in loop mode on new file");
     }
@@ -1605,7 +1910,8 @@ int navigate_and_play(void) {
     idlok(stdscr, TRUE);
     scrollok(stdscr, FALSE);
     getmaxyx(stdscr, term_height, term_width);
-    draw_outer_frame(stdscr, term_height, term_width, 0);
+    draw_single_frame(stdscr, 0, term_height, "GRANNIK | COMPLEX SOFTWARE ECOSYSTEM | FILE NAVIGATOR RAW", 1);
+    wnoutrefresh(stdscr);
     doupdate();
 
     if (term_width < MIN_WIDTH || term_height < MIN_HEIGHT) {
@@ -1661,7 +1967,7 @@ char *active_filename = player_control.current_filename;
 int playlist_mode = player_control.playlist_mode;
 if (active_filename && strlen(active_filename) > 0) {
     const char *slash = strrchr(active_filename, '/');
-    current_file_name = strdup(slash ? slash + 1 : active_filename);
+    current_file_name = safe_strdup(slash ? slash + 1 : active_filename);
 }
 pthread_mutex_unlock(&player_control.mutex);
 if (playlist_mode && playlist_dir && strcmp(playlist_dir, current_dir) == 0 && current_file_name) {
@@ -1820,10 +2126,11 @@ break;
 		{
 		    int help_start_index = 0;
 		    help_mode = 1;
-		    wtimeout(list_win, -1);
+	    wtimeout(list_win, 50);
 		    while (help_mode) {
 		        draw_help(list_win, help_start_index);
 		        int ch_help = wgetch(list_win);
+if (ch_help == ERR) continue;
 		        switch (ch_help) {
 		            case 'u': case 'U':
 		                if (help_start_index > 0) help_start_index--;
@@ -1856,10 +2163,10 @@ case 't': case 'T':
     break;
 	case ' ':
 	    if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name && file_list[selected_index].is_dir) {
-	            char full_path[PATH_MAX];
-	            if (snprintf(full_path, sizeof(full_path), "%s/%s", current_dir, file_list[selected_index].name) >= PATH_MAX) {
-	                display_message(STATUS, "Path too long!");
-	            } else {
+char *full_path = xasprintf("%s/%s", current_dir, file_list[selected_index].name);
+if (!full_path) {
+    display_message(STATUS, "Out of memory!");
+} else {
 	                load_playlist(full_path, &player_control);
 
 	                if (player_control.playlist_size == 0) {
@@ -1869,6 +2176,7 @@ case 't': case 'T':
                     SAFE_FREE(player_control.filename);
                     player_control.filename = SAFE_STRDUP(player_control.playlist[0]);
                     SAFE_FREE(player_control.current_filename);
+                            free(full_path);
 	                    player_control.current_track = 0;
 	                    player_control.playlist_mode = 1;
                             reset_playback_fields(&player_control);
@@ -1911,13 +2219,13 @@ is_different_file = selected_file_name &&
 with_player_control_lock(check_different_file);
 
 if (is_different_file) {
-        char *full_path = xasprintf("%s/%s", current_dir, selected_file_name);
-        if (full_path) {
-            start_playback(full_path, selected_file_name, 1);
-            free(full_path);
-        } else {
-            display_message(STATUS, "Out of memory! Cannot play file.");
-        }
+char *full_path = xasprintf("%s/%s", current_dir, selected_file_name);
+if (full_path) {
+    start_playback(full_path, selected_file_name, 1);
+    free(full_path);
+} else {
+    display_message(STATUS, "Out of memory! Cannot play file.");
+}
     } else {
         pthread_mutex_lock(&player_control.mutex);
         if (player_control.current_file) {
@@ -1952,16 +2260,30 @@ refresh_ui();
     return 0;
 }
 
+static void log_player_thread_disabled(void)
+{
+    display_message(ERROR, "pthread_create failed — player disabled");
+}
+
+static int try_start_player_thread(pthread_t *thread,
+                                   void *(*func)(void *),
+                                   void *arg)
+{
+if (pthread_create(thread, NULL, func, arg) == 0) {
+    return 1;
+}
+    log_player_thread_disabled();
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
     pthread_t thread = 0;
     int have_player_thread = 0;
-
-    if (pthread_create(&thread, NULL, player_thread, &player_control) == 0) {
-        have_player_thread = 1;
-    } else {
-display_message(ERROR, "pthread_create failed — player disabled");
-    }
+    have_player_thread =
+    try_start_player_thread(&thread,
+                            player_thread,
+                            &player_control);
     int result = navigate_and_play();
     if (have_player_thread) {
         shutdown_player_thread(&player_control, thread, &have_player_thread);
@@ -1973,4 +2295,4 @@ display_message(ERROR, "pthread_create failed — player disabled");
     }
     return result;
 }
-// 1976
+// 2298
