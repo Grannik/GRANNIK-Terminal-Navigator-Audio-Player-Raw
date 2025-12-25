@@ -62,6 +62,14 @@ void draw_file_list(WINDOW *win);
 #define SAFE_STRNCPY(dest, src, size) do { strncpy((dest), (src), (size)); (dest)[(size)-1] = '\0'; } while (0)
 #define COLOR_ATTR_ON(win, attr) wattron(win, COLOR_PAIR(attr))
 #define COLOR_ATTR_OFF(win, attr) wattroff(win, COLOR_PAIR(attr))
+#define ACCESS_DENIED_MSG "Access denied to: %s"
+
+void endwin_and_clear_screen(void)
+{
+    endwin();
+    if (write(STDOUT_FILENO, "\033[3J\033[2J\033[H", 11) < 0) {
+    }
+}
 
 static int has_wide_chars(const wchar_t *w, size_t len)
 {
@@ -72,268 +80,15 @@ static int has_wide_chars(const wchar_t *w, size_t len)
     return 0;
 }
 
-static int is_double_width(wchar_t c) {
-    if ((c >= 0x1100 && c <= 0x115F) ||
-        (c >= 0x231A && c <= 0x231B) ||
-        (c >= 0x2329 && c <= 0x232A) ||
-        (c >= 0x23E9 && c <= 0x23EC) ||
-        (c >= 0x23F0 && c <= 0x23F0) ||
-        (c >= 0x23F3 && c <= 0x23F3) ||
-        (c >= 0x25FD && c <= 0x25FE) ||
-        (c >= 0x2614 && c <= 0x2615) ||
-        (c >= 0x2648 && c <= 0x2653) ||
-        (c >= 0x267F && c <= 0x267F) ||
-        (c >= 0x2693 && c <= 0x2693) ||
-        (c >= 0x26A1 && c <= 0x26A1) ||
-        (c >= 0x26AA && c <= 0x26AB) ||
-        (c >= 0x26BD && c <= 0x26BE) ||
-        (c >= 0x26C4 && c <= 0x26C5) ||
-        (c >= 0x26CE && c <= 0x26CE) ||
-        (c >= 0x26D4 && c <= 0x26D4) ||
-        (c >= 0x26EA && c <= 0x26EA) ||
-        (c >= 0x26F2 && c <= 0x26F3) ||
-        (c >= 0x26F5 && c <= 0x26F5) ||
-        (c >= 0x26FA && c <= 0x26FA) ||
-        (c >= 0x26FD && c <= 0x26FD) ||
-        (c >= 0x2705 && c <= 0x2705) ||
-        (c >= 0x270A && c <= 0x270B) ||
-        (c >= 0x2728 && c <= 0x2728) ||
-        (c >= 0x274C && c <= 0x274C) ||
-        (c >= 0x274E && c <= 0x274E) ||
-        (c >= 0x2753 && c <= 0x2755) ||
-        (c >= 0x2757 && c <= 0x2757) ||
-        (c >= 0x2795 && c <= 0x2797) ||
-        (c >= 0x27B0 && c <= 0x27B0) ||
-        (c >= 0x27BF && c <= 0x27BF) ||
-        (c >= 0x2B1B && c <= 0x2B1C) ||
-        (c >= 0x2B50 && c <= 0x2B50) ||
-        (c >= 0x2B55 && c <= 0x2B55) ||
-        (c >= 0x2E80 && c <= 0x2E99) ||
-        (c >= 0x2E9B && c <= 0x2EF3) ||
-        (c >= 0x2F00 && c <= 0x2FD5) ||
-        (c >= 0x3000 && c <= 0x3000) ||
-        (c >= 0x3001 && c <= 0x3003) ||
-        (c >= 0x3004 && c <= 0x3004) ||
-        (c >= 0x3005 && c <= 0x3005) ||
-        (c >= 0x3006 && c <= 0x3006) ||
-        (c >= 0x3007 && c <= 0x3007) ||
-        (c >= 0x3008 && c <= 0x3009) ||
-        (c >= 0x300A && c <= 0x300B) ||
-        (c >= 0x300C && c <= 0x300D) ||
-        (c >= 0x300E && c <= 0x300F) ||
-        (c >= 0x3010 && c <= 0x3011) ||
-        (c >= 0x3012 && c <= 0x3013) ||
-        (c >= 0x3014 && c <= 0x3015) ||
-        (c >= 0x3016 && c <= 0x3017) ||
-        (c >= 0x3018 && c <= 0x3019) ||
-        (c >= 0x301A && c <= 0x301B) ||
-        (c >= 0x3020 && c <= 0x3020) ||
-        (c >= 0x3021 && c <= 0x3029) ||
-        (c >= 0x302A && c <= 0x302D) ||
-        (c >= 0x302E && c <= 0x302F) ||
-        (c >= 0x3030 && c <= 0x3030) ||
-        (c >= 0x3031 && c <= 0x3035) ||
-        (c >= 0x3036 && c <= 0x3037) ||
-        (c >= 0x3038 && c <= 0x303A) ||
-        (c >= 0x303B && c <= 0x303B) ||
-        (c >= 0x303C && c <= 0x303C) ||
-        (c >= 0x303D && c <= 0x303D) ||
-        (c >= 0x303E && c <= 0x303E) ||
-        (c >= 0x3041 && c <= 0x3096) ||
-        (c >= 0x3099 && c <= 0x309A) ||
-        (c >= 0x309B && c <= 0x309C) ||
-        (c >= 0x309D && c <= 0x309E) ||
-        (c >= 0x309F && c <= 0x309F) ||
-        (c >= 0x30A0 && c <= 0x30A0) ||
-        (c >= 0x30A1 && c <= 0x30FA) ||
-        (c >= 0x30FB && c <= 0x30FB) ||
-        (c >= 0x30FC && c <= 0x30FE) ||
-        (c >= 0x30FF && c <= 0x30FF) ||
-        (c >= 0x3105 && c <= 0x312F) ||
-        (c >= 0x3131 && c <= 0x318E) ||
-        (c >= 0x3190 && c <= 0x3191) ||
-        (c >= 0x3192 && c <= 0x3195) ||
-        (c >= 0x3196 && c <= 0x319F) ||
-        (c >= 0x31A0 && c <= 0x31BF) ||
-        (c >= 0x31C0 && c <= 0x31E5) ||
-        (c >= 0x31EF && c <= 0x31EF) ||
-        (c >= 0x31F0 && c <= 0x31FF) ||
-        (c >= 0x3200 && c <= 0x321E) ||
-        (c >= 0x3220 && c <= 0x3229) ||
-        (c >= 0x322A && c <= 0x3247) ||
-        (c >= 0x3250 && c <= 0x3250) ||
-        (c >= 0x3251 && c <= 0x325F) ||
-        (c >= 0x3260 && c <= 0x327F) ||
-        (c >= 0x3280 && c <= 0x3289) ||
-        (c >= 0x328A && c <= 0x32B0) ||
-        (c >= 0x32B1 && c <= 0x32BF) ||
-        (c >= 0x32C0 && c <= 0x32FF) ||
-        (c >= 0x3300 && c <= 0x33FF) ||
-        (c >= 0x3400 && c <= 0x4DBF) ||
-        (c >= 0x4DC0 && c <= 0x4DFF) ||
-        (c >= 0x4E00 && c <= 0x9FFF) ||
-        (c >= 0xA000 && c <= 0xA014) ||
-        (c >= 0xA015 && c <= 0xA015) ||
-        (c >= 0xA016 && c <= 0xA48C) ||
-        (c >= 0xA490 && c <= 0xA4C6) ||
-        (c >= 0xAC00 && c <= 0xD7A3) ||
-        (c >= 0xF900 && c <= 0xFA6D) ||
-        (c >= 0xFA70 && c <= 0xFAD9) ||
-        (c >= 0xFE10 && c <= 0xFE16) ||
-        (c >= 0xFE17 && c <= 0xFE18) ||
-        (c >= 0xFE30 && c <= 0xFE30) ||
-        (c >= 0xFE31 && c <= 0xFE32) ||
-        (c >= 0xFE33 && c <= 0xFE34) ||
-        (c >= 0xFE35 && c <= 0xFE35) ||
-        (c >= 0xFE36 && c <= 0xFE36) ||
-        (c >= 0xFE37 && c <= 0xFE38) ||
-        (c >= 0xFE39 && c <= 0xFE3A) ||
-        (c >= 0xFE3B && c <= 0xFE3C) ||
-        (c >= 0xFE3D && c <= 0xFE3E) ||
-        (c >= 0xFE3F && c <= 0xFE40) ||
-        (c >= 0xFE41 && c <= 0xFE42) ||
-        (c >= 0xFE43 && c <= 0xFE44) ||
-        (c >= 0xFE45 && c <= 0xFE46) ||
-        (c >= 0xFE47 && c <= 0xFE48) ||
-        (c >= 0xFE49 && c <= 0xFE4C) ||
-        (c >= 0xFE4D && c <= 0xFE4F) ||
-        (c >= 0xFE50 && c <= 0xFE52) ||
-        (c >= 0xFE54 && c <= 0xFE57) ||
-        (c >= 0xFE58 && c <= 0xFE58) ||
-        (c >= 0xFE59 && c <= 0xFE5A) ||
-        (c >= 0xFE5B && c <= 0xFE5C) ||
-        (c >= 0xFE5D && c <= 0xFE5E) ||
-        (c >= 0xFE5F && c <= 0xFE61) ||
-        (c >= 0xFE62 && c <= 0xFE62) ||
-        (c >= 0xFE63 && c <= 0xFE63) ||
-        (c >= 0xFE64 && c <= 0xFE66) ||
-        (c >= 0xFE68 && c <= 0xFE68) ||
-        (c >= 0xFE69 && c <= 0xFE69) ||
-        (c >= 0xFE6A && c <= 0xFE6B) ||
-        (c >= 0xFF01 && c <= 0xFF03) ||
-        (c >= 0xFF04 && c <= 0xFF04) ||
-        (c >= 0xFF05 && c <= 0xFF07) ||
-        (c >= 0xFF08 && c <= 0xFF09) ||
-        (c >= 0xFF0A && c <= 0xFF0A) ||
-        (c >= 0xFF0B && c <= 0xFF0B) ||
-        (c >= 0xFF0C && c <= 0xFF0C) ||
-        (c >= 0xFF0D && c <= 0xFF0D) ||
-        (c >= 0xFF0E && c <= 0xFF0F) ||
-        (c >= 0xFF10 && c <= 0xFF19) ||
-        (c >= 0xFF1A && c <= 0xFF1B) ||
-        (c >= 0xFF1C && c <= 0xFF1E) ||
-        (c >= 0xFF1F && c <= 0xFF20) ||
-        (c >= 0xFF21 && c <= 0xFF3A) ||
-        (c >= 0xFF3B && c <= 0xFF3B) ||
-        (c >= 0xFF3C && c <= 0xFF3C) ||
-        (c >= 0xFF3D && c <= 0xFF3D) ||
-        (c >= 0xFF3E && c <= 0xFF3E) ||
-        (c >= 0xFF3F && c <= 0xFF3F) ||
-        (c >= 0xFF40 && c <= 0xFF40) ||
-        (c >= 0xFF41 && c <= 0xFF5A) ||
-        (c >= 0xFF5B && c <= 0xFF5B) ||
-        (c >= 0xFF5C && c <= 0xFF5C) ||
-        (c >= 0xFF5D && c <= 0xFF5D) ||
-        (c >= 0xFF5E && c <= 0xFF5E) ||
-        (c >= 0xFF5F && c <= 0xFF5F) ||
-        (c >= 0xFF60 && c <= 0xFF60) ||
-        (c >= 0xFF61 && c <= 0xFF61) ||
-        (c >= 0xFF62 && c <= 0xFF62) ||
-        (c >= 0xFF63 && c <= 0xFF63) ||
-        (c >= 0xFF64 && c <= 0xFF65) ||
-        (c >= 0xFF66 && c <= 0xFF6F) ||
-        (c >= 0xFF70 && c <= 0xFF70) ||
-        (c >= 0xFF71 && c <= 0xFF9D) ||
-        (c >= 0xFF9E && c <= 0xFF9F) ||
-        (c >= 0xFFA0 && c <= 0xFFBE) ||
-        (c >= 0xFFC2 && c <= 0xFFC7) ||
-        (c >= 0xFFCA && c <= 0xFFCF) ||
-        (c >= 0xFFD2 && c <= 0xFFD7) ||
-        (c >= 0xFFDA && c <= 0xFFDC) ||
-        (c >= 0xFFE0 && c <= 0xFFE1) ||
-        (c >= 0xFFE2 && c <= 0xFFE2) ||
-        (c >= 0xFFE3 && c <= 0xFFE3) ||
-        (c >= 0xFFE4 && c <= 0xFFE4) ||
-        (c >= 0xFFE5 && c <= 0xFFE6) ||
-        (c >= 0x1AFF0 && c <= 0x1AFF3) ||
-        (c >= 0x1AFF5 && c <= 0x1AFFB) ||
-        (c >= 0x1AFFD && c <= 0x1AFFE) ||
-        (c >= 0x1B000 && c <= 0x1B122) ||
-        (c >= 0x1B132 && c <= 0x1B132) ||
-        (c >= 0x1B150 && c <= 0x1B152) ||
-        (c >= 0x1B155 && c <= 0x1B155) ||
-        (c >= 0x1B164 && c <= 0x1B167) ||
-        (c >= 0x1B170 && c <= 0x1B2FB) ||
-        (c >= 0x1D300 && c <= 0x1D356) ||
-        (c >= 0x1D360 && c <= 0x1D376) ||
-        (c >= 0x1F004 && c <= 0x1F004) ||
-        (c >= 0x1F0CF && c <= 0x1F0CF) ||
-        (c >= 0x1F18E && c <= 0x1F18E) ||
-        (c >= 0x1F191 && c <= 0x1F19A) ||
-        (c >= 0x1F1E6 && c <= 0x1F1FF) ||
-        (c >= 0x1F200 && c <= 0x1F202) ||
-        (c >= 0x1F210 && c <= 0x1F23B) ||
-        (c >= 0x1F240 && c <= 0x1F248) ||
-        (c >= 0x1F250 && c <= 0x1F251) ||
-        (c >= 0x1F260 && c <= 0x1F265) ||
-        (c >= 0x1F300 && c <= 0x1F320) ||
-        (c >= 0x1F32D && c <= 0x1F335) ||
-        (c >= 0x1F337 && c <= 0x1F37C) ||
-        (c >= 0x1F37E && c <= 0x1F393) ||
-        (c >= 0x1F3A0 && c <= 0x1F3CA) ||
-        (c >= 0x1F3CF && c <= 0x1F3D3) ||
-        (c >= 0x1F3E0 && c <= 0x1F3F0) ||
-        (c >= 0x1F3F4 && c <= 0x1F3F4) ||
-        (c >= 0x1F3F8 && c <= 0x1F43E) ||
-        (c >= 0x1F440 && c <= 0x1F440) ||
-        (c >= 0x1F442 && c <= 0x1F4FC) ||
-        (c >= 0x1F4FF && c <= 0x1F53D) ||
-        (c >= 0x1F54B && c <= 0x1F54E) ||
-        (c >= 0x1F550 && c <= 0x1F567) ||
-        (c >= 0x1F57A && c <= 0x1F57A) ||
-        (c >= 0x1F595 && c <= 0x1F596) ||
-        (c >= 0x1F5A4 && c <= 0x1F5A4) ||
-        (c >= 0x1F5FB && c <= 0x1F64F) ||
-        (c >= 0x1F680 && c <= 0x1F6C5) ||
-        (c >= 0x1F6CC && c <= 0x1F6CC) ||
-        (c >= 0x1F6D0 && c <= 0x1F6D2) ||
-        (c >= 0x1F6D5 && c <= 0x1F6D7) ||
-        (c >= 0x1F6DC && c <= 0x1F6DF) ||
-        (c >= 0x1F6EB && c <= 0x1F6EC) ||
-        (c >= 0x1F6F4 && c <= 0x1F6FC) ||
-        (c >= 0x1F7E0 && c <= 0x1F7EB) ||
-        (c >= 0x1F7F0 && c <= 0x1F7F0) ||
-        (c >= 0x1F90C && c <= 0x1F93A) ||
-        (c >= 0x1F93C && c <= 0x1F945) ||
-        (c >= 0x1F947 && c <= 0x1F9FF) ||
-        (c >= 0x1FA70 && c <= 0x1FA7C) ||
-        (c >= 0x1FA80 && c <= 0x1FA88) ||
-        (c >= 0x1FA90 && c <= 0x1FABD) ||
-        (c >= 0x1FABF && c <= 0x1FAC5) ||
-        (c >= 0x1FACE && c <= 0x1FADB) ||
-        (c >= 0x1FAE0 && c <= 0x1FAE8) ||
-        (c >= 0x1FAF0 && c <= 0x1FAF8) ||
-        (c >= 0x20000 && c <= 0x2A6DF) ||
-        (c >= 0x2A700 && c <= 0x2B739) ||
-        (c >= 0x2B740 && c <= 0x2B81D) ||
-        (c >= 0x2B820 && c <= 0x2CEA1) ||
-        (c >= 0x2CEB0 && c <= 0x2EBE0) ||
-        (c >= 0x2EBF0 && c <= 0x2EE5D) ||
-        (c >= 0x2F800 && c <= 0x2FA1D) ||
-        (c >= 0x30000 && c <= 0x3134A) ||
-        (c >= 0x31350 && c <= 0x323AF)) {
-        return 1;
-    }
-    return 0;
+static inline int get_char_width(wchar_t c) {
+    int w = wcwidth(c);
+    return (w >= 0) ? w : 1;
 }
 
-static inline int safe_wcwidth(wchar_t c) {
-    int w = wcwidth(c);
-    if (w < 0) {
-        if (is_double_width(c)) return 2;
-        else return 1;
+static void add_ellipsis(wchar_t *dest, size_t *dest_idx, size_t dest_size, const wchar_t *ellipsis, size_t ell_len) {
+    for (size_t j = 0; j < ell_len && *dest_idx < dest_size - 1; j++) {
+        dest[(*dest_idx)++] = ellipsis[j];
     }
-    return w;
 }
 
 int convert_to_wchar(const char *src, wchar_t **wsrc_out, size_t *wlen_out) {
@@ -369,8 +124,13 @@ int convert_to_wchar(const char *src, wchar_t **wsrc_out, size_t *wlen_out) {
     *wlen_out = wlen;
     return 0;
 }
-
-static int calculate_visual_width(const char *src);
+static int compute_wchar_width(const wchar_t *w, size_t len) {
+    int width = 0;
+    for (size_t i = 0; i < len; i++) {
+        width += get_char_width(w[i]);
+    }
+    return width;
+}
 static int calculate_visual_width(const char *src);
 int prepare_display_wstring(const char *src, int max_visual_width, wchar_t *dest, size_t dest_size, int add_suffix, const wchar_t *ellipsis, int visual_offset, int use_middle_ellipsis) {
     if (!src || !dest || dest_size == 0) return -1;
@@ -387,11 +147,13 @@ int prepare_display_wstring(const char *src, int max_visual_width, wchar_t *dest
         free(wsrc);
         return 0;
     }
-    size_t ell_len = wcslen(ellipsis);
-    int ell_width = 0;
-    for (size_t j = 0; j < ell_len; j++) {
-    ell_width += safe_wcwidth(ellipsis[j]);
-    }
+	size_t ell_len = wcslen(ellipsis);
+	int ell_width = 0;
+	if (use_middle_ellipsis && has_wide_chars(wsrc, wlen) && !add_suffix) {
+	    ellipsis = L"...";
+	    ell_len = 3;
+	}
+	ell_width = compute_wchar_width(ellipsis, ell_len);
     int remaining_width = max_visual_width - ell_width;
     if (remaining_width < 2) {
         wcsncpy(dest, ellipsis, dest_size - 1);
@@ -404,28 +166,29 @@ int prepare_display_wstring(const char *src, int max_visual_width, wchar_t *dest
     if (use_middle_ellipsis) {
         int front_width = remaining_width / 2;
         int back_width = remaining_width - front_width;
-if (has_wide_chars(wsrc, wlen)) {
-    if (front_width % 2 != 0) {
-        front_width--;
-        back_width++;
-    }
+	if (has_wide_chars(wsrc, wlen)) {
+	    if (front_width % 2 != 0) {
+	        front_width--;
+	        back_width++;
+	    }
+	    if (back_width % 2 != 0) {
+	        back_width--;
+	    }
 }
         size_t i = 0;
         while (i < wlen && dest_idx < dest_size - 1 && current_width < front_width) {
-int char_width = safe_wcwidth(wsrc[i]);
+int char_width = get_char_width(wsrc[i]);
             if (current_width + char_width > front_width) break;
             dest[dest_idx++] = wsrc[i++];
             current_width += char_width;
         }
-        for (size_t j = 0; j < ell_len && dest_idx < dest_size - 1; j++) {
-            dest[dest_idx++] = ellipsis[j];
-        }
+add_ellipsis(dest, &dest_idx, dest_size, ellipsis, ell_len);
         current_width += ell_width;
         size_t back_start = wlen;
         int back_current = 0;
         while (back_start > i && back_current < back_width) {
             back_start--;
-int char_width = safe_wcwidth(wsrc[back_start]);
+int char_width = get_char_width(wsrc[back_start]);
             if (back_current + char_width > back_width) {
                 back_start++;
                 break;
@@ -441,7 +204,7 @@ int char_width = safe_wcwidth(wsrc[back_start]);
         int current_offset = 0;
         size_t start_i = 0;
         while (start_i < wlen) {
-int char_width = safe_wcwidth(wsrc[start_i]);
+int char_width = get_char_width(wsrc[start_i]);
             if (current_offset + char_width > visual_offset) break;
             current_offset += char_width;
             start_i++;
@@ -455,21 +218,19 @@ int char_width = safe_wcwidth(wsrc[start_i]);
         }
         size_t i = start_i;
         while (i < wlen && dest_idx < dest_size - 1) {
-int char_width = safe_wcwidth(wsrc[i]);
+int char_width = get_char_width(wsrc[i]);
             if (current_width + char_width > remaining_width) break;
             dest[dest_idx++] = wsrc[i++];
             current_width += char_width;
         }
         if (need_end_ellipsis) {
-            for (size_t j = 0; j < ell_len && dest_idx < dest_size - 1; j++) {
-                dest[dest_idx++] = ellipsis[j];
-            }
+add_ellipsis(dest, &dest_idx, dest_size, ellipsis, ell_len);
         }
     }
     dest[dest_idx] = L'\0';
     if (add_suffix) {
         wchar_t suffix = L'/';
-int suffix_width = safe_wcwidth(suffix);
+	int suffix_width = get_char_width(suffix);
 if (current_width + suffix_width <= max_visual_width && dest_idx < dest_size - 1) {
             dest[dest_idx++] = suffix;
             dest[dest_idx] = L'\0';
@@ -485,9 +246,7 @@ static int calculate_visual_width(const char *src) {
     size_t wlen = 0;
     if (convert_to_wchar(src, &wsrc, &wlen) != 0) return 0;
     int total_width = 0;
-    for (size_t k = 0; k < wlen; k++) {
-total_width += safe_wcwidth(wsrc[k]);
-    }
+    total_width = compute_wchar_width(wsrc, wlen);
 SAFE_FREE(wsrc);
     return total_width;
 }
@@ -501,6 +260,7 @@ static void display_message(int type, const char *fmt, ...);
 static void memory_error(void) {
     display_message(ERROR, "Out of memory");
 }
+static void check_alloc(void *ptr) {if (!ptr) memory_error();}
 static int is_raw_file(const char *name);
 __attribute__((unused)) static char *xasprintf(const char *fmt, ...);
 static void free_names(void *entries, int count, int is_file_entry);
@@ -522,24 +282,14 @@ rewinddir(dir);
         return 0;
     }
     size_t entry_size = for_playlist ? sizeof(char *) : sizeof(FileEntry);
-    size_t capacity = 16;
-    void *entries = calloc(capacity, entry_size);
+	    size_t capacity = (count > 0) ? count : 1;
+	    void *entries = calloc(capacity, entry_size);
     if (!entries) {
         closedir(dir);
         return -1;
     }
 size_t idx = 0;
     while ((entry = readdir(dir))) {
-        if (idx >= capacity) {
-            capacity *= 2;
-            void *new_entries = realloc(entries, capacity * entry_size);
-            if (!new_entries) {
-                free_names(entries, idx, !for_playlist);
-                closedir(dir);
-                return -1;
-            }
-            entries = new_entries;
-        }
         if (entry->d_name[0] == '.') continue;
         if (filter_raw && !is_raw_file(entry->d_name)) continue;
         char *name = strdup(entry->d_name);
@@ -566,8 +316,13 @@ size_t idx = 0;
             ((char **)entries)[idx] = full_path;
             free(name);
         } else {
-            struct stat st;
-            ((FileEntry *)entries)[idx].is_dir = (lstat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+struct stat st;
+if (lstat(full_path, &st) == -1) {
+    display_message(ERROR, "lstat failed for: %s (errno: %d)", full_path, errno);
+    ((FileEntry *)entries)[idx].is_dir = 0;
+} else {
+    ((FileEntry *)entries)[idx].is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
+}
             ((FileEntry *)entries)[idx].name = name;
             free(full_path);
         }
@@ -578,14 +333,12 @@ size_t idx = 0;
     *count_out = idx;
     return 0;
 }
-
 static char *safe_strdup(const char *src) {
     if (!src) return NULL;
-	    char *dup = strdup(src);
-	    if (!dup) memory_error();
-	    return dup;
+    char *dup = strdup(src);
+    check_alloc(dup);
+    return dup;
 }
-
 static void print_formatted_time(WINDOW *win, int y, int x, int seconds) {
     if (seconds < 0) {
         mvwprintw(win, y, x, "--:--:--");
@@ -649,13 +402,12 @@ static char *xasprintf(const char *fmt, ...)
     va_list ap;
     va_start(ap, fmt);
     if (vasprintf(&res, fmt, ap) == -1) {
-memory_error();
         res = NULL;
     }
+    check_alloc(res);
     va_end(ap);
     return res;
 }
-
 static void free_names(void *entries, int count, int is_file_entry) {
     if (!entries) return;
     if (is_file_entry) {
@@ -701,21 +453,8 @@ initscr();
         init_pair(COLOR_PAIR_PROGRESS, COLOR_GREEN, COLOR_BLACK);
     }
 }
+
 static int setup_alsa_hw_params(snd_pcm_t *handle, snd_pcm_hw_params_t *params, unsigned int *rate, int channels, snd_pcm_uframes_t *period_size, snd_pcm_uframes_t *buffer_size);
-int set_alsa_params(snd_pcm_t *handle, unsigned int rate, int channels) {
-    if (!handle) {
-display_message(ERROR, "Invalid handle in set_alsa_params — audio disabled");
-        return -1;
-    }
-    snd_pcm_hw_params_t *params;
-    snd_pcm_hw_params_alloca(&params);
-    snd_pcm_uframes_t period_size = 256;
-    snd_pcm_uframes_t buffer_size = 1024;
-    if (setup_alsa_hw_params(handle, params, &rate, channels, &period_size, &buffer_size) < 0) {
-        return -1;
-    }
-    return 0;
-}
 void play_audio(snd_pcm_t *handle, char *buffer, int size) {
     if (!handle || !buffer || size <= 0) {
 display_message(ERROR, "Invalid params in play_audio");
@@ -726,20 +465,23 @@ display_message(ERROR, "Invalid params in play_audio");
     snd_pcm_uframes_t remaining = frames;
     while (remaining > 0) {
         snd_pcm_sframes_t written = snd_pcm_writei(handle, ptr, remaining);
-        if (written < 0) {
-            if (written == -EPIPE) {
-                if (snd_pcm_prepare(handle) < 0) {
-display_message(ERROR, "snd_pcm_prepare failed after EPIPE");
-                    snd_pcm_drop(handle);
-                    return;
-                }
-            } else {
-display_message(ERROR, "snd_pcm_writei failed: %s", snd_strerror(written));
+    if (written < 0) {
+        if (written == -EAGAIN) {
+            continue;
+        }
+        if (written == -EPIPE) {
+            if (snd_pcm_prepare(handle) < 0) {
+                display_message(ERROR, "snd_pcm_prepare failed after EPIPE");
                 snd_pcm_drop(handle);
                 return;
             }
-            continue;
+        } else {
+            display_message(ERROR, "snd_pcm_writei failed: %s", snd_strerror(written));
+            snd_pcm_drop(handle);
+            return;
         }
+        continue;
+    }
         remaining -= written;
         ptr += written * 4;
     }
@@ -750,7 +492,6 @@ FILE* open_audio_file(const char *filename) {
 display_message(ERROR, "Invalid filename in open_audio_file");
         return NULL;
     }
-
     FILE *file = fopen(filename, "rb");
     if (!file) {
         display_message(ERROR, "Failed to open file: %s", filename);
@@ -764,7 +505,6 @@ static void safe_cleanup_resources(FILE **file, snd_pcm_t **handle, struct pollf
     if (file && *file) { fclose(*file); *file = NULL; }
     if (handle && *handle) {
         snd_pcm_drop(*handle);
-        snd_pcm_drain(*handle);
         snd_pcm_close(*handle);
         *handle = NULL;
     }
@@ -772,101 +512,110 @@ static void safe_cleanup_resources(FILE **file, snd_pcm_t **handle, struct pollf
     if (current_filename && *current_filename) { free(*current_filename); *current_filename = NULL; }
 }
 
-static void alsa_error(const char *msg, const char *err) {
-    if (err) {
-        display_message(ERROR, "%s: %s — audio disabled", msg, err);
-    } else {
-        display_message(ERROR, "%s — audio disabled", msg);
+static int handle_alsa_error(int ret, const char *msg, int do_return) {
+    if (ret < 0) {
+        const char *err = snd_strerror(ret);
+        if (err) {
+            display_message(ERROR, "%s: %s — audio disabled", msg, err);
+        } else {
+            display_message(ERROR, "%s — audio disabled", msg);
+        }
+        if (do_return) return -1;
     }
+    return 0;
 }
-
+// verification
 static int setup_alsa_hw_params(snd_pcm_t *handle, snd_pcm_hw_params_t *params, unsigned int *rate, int channels, snd_pcm_uframes_t *period_size, snd_pcm_uframes_t *buffer_size) {
-    int ret;
     int dir = 0;
-    if ((ret = snd_pcm_hw_params_any(handle, params)) < 0) {
-        alsa_error("snd_pcm_hw_params_any failed", snd_strerror(ret));
+    int ret;
+    ret = snd_pcm_hw_params_any(handle, params);
+    if (handle_alsa_error(ret, "snd_pcm_hw_params_any failed", 1) < 0)
         return -1;
-    }
-    if ((ret = snd_pcm_hw_params_set_access(handle, params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
-        alsa_error("snd_pcm_hw_params_set_access failed", snd_strerror(ret));
+    ret = snd_pcm_hw_params_set_access(
+            handle, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+    if (handle_alsa_error(ret, "snd_pcm_hw_params_set_access failed", 1) < 0)
         return -1;
-    }
-    if ((ret = snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16_LE)) < 0) {
-        alsa_error("snd_pcm_hw_params_set_format failed", snd_strerror(ret));
+    ret = snd_pcm_hw_params_set_format(
+            handle, params, SND_PCM_FORMAT_S16_LE);
+    if (handle_alsa_error(ret, "snd_pcm_hw_params_set_format failed", 1) < 0)
         return -1;
-    }
-    if ((ret = snd_pcm_hw_params_set_channels(handle, params, channels)) < 0) {
-        alsa_error("snd_pcm_hw_params_set_channels failed", snd_strerror(ret));
+    ret = snd_pcm_hw_params_set_channels(
+            handle, params, channels);
+    if (handle_alsa_error(ret, "snd_pcm_hw_params_set_channels failed", 1) < 0)
         return -1;
-    }
-    if ((ret = snd_pcm_hw_params_set_rate_near(handle, params, rate, &dir)) < 0) {
-        alsa_error("snd_pcm_hw_params_set_rate_near failed", snd_strerror(ret));
+    ret = snd_pcm_hw_params_set_rate_near(
+            handle, params, rate, &dir);
+    if (handle_alsa_error(ret, "snd_pcm_hw_params_set_rate_near failed", 1) < 0)
         return -1;
-    }
-    if ((ret = snd_pcm_hw_params_set_period_size_near(handle, params, period_size, &dir)) < 0) {
-        alsa_error("snd_pcm_hw_params_set_period_size_near failed", snd_strerror(ret));
+    ret = snd_pcm_hw_params_set_period_size_near(
+            handle, params, period_size, &dir);
+    if (handle_alsa_error(ret, "snd_pcm_hw_params_set_period_size_near failed", 1) < 0)
         return -1;
-    }
-    if ((ret = snd_pcm_hw_params_set_buffer_size_near(handle, params, buffer_size)) < 0) {
-        alsa_error("snd_pcm_hw_params_set_buffer_size_near failed", snd_strerror(ret));
+    ret = snd_pcm_hw_params_set_buffer_size_near(
+            handle, params, buffer_size);
+    if (handle_alsa_error(ret, "snd_pcm_hw_params_set_buffer_size_near failed", 1) < 0)
         return -1;
-    }
-    if ((ret = snd_pcm_hw_params(handle, params)) < 0) {
-        alsa_error("snd_pcm_hw_params failed", snd_strerror(ret));
+    if (handle_alsa_error(
+            snd_pcm_hw_params(handle, params),
+            "snd_pcm_hw_params failed", 1) < 0) {
         return -1;
     }
     return 0;
 }
-
+// verification
 snd_pcm_t* init_audio_device(unsigned int rate, int channels) {
     snd_pcm_t *handle = NULL;
-    int ret = snd_pcm_open(&handle, "default", SND_PCM_STREAM_PLAYBACK, 0);
-    if (ret < 0) {
-alsa_error("ALSA device open error", snd_strerror(ret));
+    int ret = snd_pcm_open(&handle, "default", SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+    if (handle_alsa_error(ret, "ALSA device open error", 1) < 0) {
         return NULL;
     }
-    if (set_alsa_params(handle, rate, channels) < 0) {
-alsa_error("ALSA params setup failed", NULL);
+    snd_pcm_hw_params_t *params;
+    snd_pcm_hw_params_alloca(&params);
+    snd_pcm_uframes_t period_size = 256;
+    snd_pcm_uframes_t buffer_size = 1024;
+    if (setup_alsa_hw_params(handle, params, &rate, channels, &period_size, &buffer_size) < 0) {
         snd_pcm_close(handle);
         return NULL;
     }
+
     ret = snd_pcm_prepare(handle);
-    if (ret < 0) {
-alsa_error("snd_pcm_prepare failed", snd_strerror(ret));
+    if (handle_alsa_error(ret, "snd_pcm_prepare failed", 1) < 0) {
         snd_pcm_close(handle);
         return NULL;
     }
     return handle;
 }
+
 static void draw_single_frame(WINDOW *win, int start_y, int height, const char *title, int line_type);
 static void draw_fill_line(WINDOW *win, int start_y, int start_x, int length, const void *symbol, int is_horizontal, int is_wide) {
-    for (int i = 0; i < length; i++) {
-        if (is_horizontal) {
-            if (is_wide) {
-                mvwaddnwstr(win, start_y, start_x + i, (const wchar_t *)symbol, 1);
-            } else {
-                mvwprintw(win, start_y, start_x + i, "%s", (const char *)symbol);
-            }
-        } else {
-            if (is_wide) {
-                mvwaddnwstr(win, start_y + i, start_x, (const wchar_t *)symbol, 1);
-            } else {
-                mvwprintw(win, start_y + i, start_x, "%s", (const char *)symbol);
-            }
-        }
+int y = start_y;
+int x = start_x;
+for (int i = 0; i < length; i++) {
+    if (is_wide) {
+        mvwaddnwstr(win, y, x, (const wchar_t *)symbol, 1);
+    } else {
+        mvwprintw(win, y, x, "%s", (const char *)symbol);
     }
+    if (is_horizontal) x++; else y++;
+}
 }
 
-static char *shorten_title(const char *title, int max_len) {
-    if (!title || max_len < 5) return strdup(title ? title : "");
-    size_t len = strlen(title);
-    if (len <= (size_t)max_len) return strdup(title);
-    int front_len = (max_len - 3) / 2;
-    int back_len = max_len - 3 - front_len;
-    char *shortened = malloc(max_len + 1);
-    if (!shortened) return NULL;
-snprintf(shortened, max_len + 1, "%.*s...%s", front_len, title, title + len - back_len);
-    return shortened;
+static void center_title_on_frame(WINDOW *win, int y, int actual_width, const char *title, const char *title_left, const char *title_right) {
+    wchar_t wtitle[INNER_WIDTH + 1];
+    prepare_display_wstring(title, actual_width - 4, wtitle, sizeof(wtitle) / sizeof(wchar_t), 0, L"..", 0, 0);
+    int title_wlen = wcslen(wtitle);
+    int title_width = 0;
+    for (int i = 0; i < title_wlen; i++) {
+        int w = wcwidth(wtitle[i]);
+        title_width += (w < 0 ? 1 : w);
+    }
+    int title_len = title_width + 4;
+    int title_start = (actual_width - title_len) / 2;
+    if (title_start < 1) title_start = 1;
+    if (title_start + title_len > actual_width - 1) title_start = actual_width - title_len - 1;
+    mvwprintw(win, y, title_start, "%s ", title_left);
+    mvwaddnwstr(win, y, title_start + 2, wtitle, title_wlen);
+    mvwprintw(win, y, title_start + 2 + title_width, " %s", title_right);
 }
 
 static void draw_single_frame(WINDOW *win, int start_y, int height, const char *title, int line_type)
@@ -890,25 +639,7 @@ static void draw_single_frame(WINDOW *win, int start_y, int height, const char *
     int title_start = (actual_width - title_len) / 2;
     if (title_start < 1) title_start = 1;
     if (title_start + title_len > actual_width - 1) title_start = actual_width - title_len - 1;
-char *short_title = shorten_title(title, actual_width - 4);
-if (short_title) {
-wchar_t wtitle[INNER_WIDTH + 1];
-prepare_display_wstring(title, actual_width - 4, wtitle, sizeof(wtitle) / sizeof(wchar_t), 0, L"..", 0, 0);
-int title_wlen = wcslen(wtitle);
-int title_width = 0;
-for (int i = 0; i < title_wlen; i++) {
-    int w = wcwidth(wtitle[i]);
-    title_width += (w < 0 ? 1 : w);
-}
-int title_len = title_width + 4;
-int title_start = (actual_width - title_len) / 2;
-if (title_start < 1) title_start = 1;
-if (title_start + title_len > actual_width - 1) title_start = actual_width - title_len - 1;
-mvwprintw(win, start_y, title_start, "%s ", title_left);
-mvwaddnwstr(win, start_y, title_start + 2, wtitle, title_wlen);
-mvwprintw(win, start_y, title_start + 2 + title_width, " %s", title_right);
-    free(short_title);
-}
+    center_title_on_frame(win, start_y, actual_width, title, title_left, title_right);
     draw_fill_line(win, start_y + 1, 0, height - 2, vertical, 0, 0);
     draw_fill_line(win, start_y + 1, actual_width - 1, height - 2, vertical, 0, 0);
     mvwprintw(win, start_y + height - 1, 0, "%s", bottom_left);
@@ -1020,15 +751,22 @@ typedef struct PlayerControl {
  void lock_and_signal(PlayerControl *control, void (*action)(PlayerControl *));
 void cleanup_playlist(PlayerControl *control) {
     if (!control) return;
-    if (control->playlist) {
-        free_names(control->playlist, control->playlist_size, 0);
-        control->playlist = NULL;
-        control->playlist_size = 0;
-        control->playlist_capacity = 0;
-        control->current_track = 0;
+    char **old_list = control->playlist;
+    int old_size = control->playlist_size;
+    char *old_dir = control->playlist_dir;
+    control->playlist = NULL;
+    control->playlist_size = 0;
+    control->playlist_capacity = 0;
+    control->current_track = 0;
+    control->playlist_dir = NULL;
+    if (old_list) {
+        free_names(old_list, old_size, 0);
     }
-    SAFE_FREE(control->playlist_dir);
+    if (old_dir) {
+        free(old_dir);
+    }
 }
+
 static void reset_playback_fields(PlayerControl *control) {
     control->paused = 0;
     control->is_silent = 0;
@@ -1039,7 +777,6 @@ static void reset_playback_fields(PlayerControl *control) {
     control->duration = 0.0;
     control->seek_delta = 0;
 }
-
 PlayerControl player_control;
 void top(WINDOW *win)
 {
@@ -1079,14 +816,15 @@ draw_single_frame(win, 3, usable_height, "FILES & DIRECTORIES", 0);
 void perform_seek(PlayerControl *control, snd_pcm_t *handle);
 PlayerControl player_control = {
     .filename = NULL, .pause = 0, .stop = 0, .quit = 0,
-    .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER,
+    .cond = PTHREAD_COND_INITIALIZER,
     .current_file = NULL, .current_filename = NULL, .paused = 0,
     .loop_mode = 0,
     .playlist = NULL, .playlist_size = 0, .current_track = 0, .playlist_mode = 0,
     .seek_delta = 0, .duration = 0.0, .bytes_read = 0LL,
     .is_silent = 0, .fading_out = 0, .fading_in = 0, .current_fade = FADE_STEPS,
-.playlist_dir = NULL,
+    .playlist_dir = NULL,
 };
+
 static int is_raw_file(const char *name) {
     if (!name) return 0;
     size_t len = strlen(name);
@@ -1445,6 +1183,21 @@ if (last_list_row < safe_clear_end) {
 }
 	draw_field_frame(win);
 }
+
+static void cleanup_playlist_and_filename(PlayerControl *control) {
+    if (control->playlist) {
+        free_names(control->playlist, control->playlist_size, 0);
+        control->playlist = NULL;
+        control->playlist_size = 0;
+        control->playlist_capacity = 0;
+        free(control->playlist_dir);
+        control->playlist_dir = NULL;
+    }
+    if (control->filename) {
+SAFE_FREE(control->filename);
+    }
+}
+
 void *player_thread(void *arg) {
     PlayerControl *control = (PlayerControl *)arg;
     unsigned int rate = 44100;
@@ -1463,21 +1216,10 @@ void *player_thread(void *arg) {
             pthread_mutex_unlock(&control->mutex);
             break;
         }
-	if (control->stop) {
-                safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
-	    if (control->playlist) {
-free_names(control->playlist, control->playlist_size, 0);
-	        control->playlist = NULL;
-	        control->playlist_size = 0;
-	        control->playlist_capacity = 0;
-                free(control->playlist_dir);
-                control->playlist_dir = NULL;
-	    }
-	    if (control->filename) {
-	        free(control->filename);
-	        control->filename = NULL;
-	    }
-	    if (control->playlist_mode) {
+    if (control->stop) {
+    safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
+    cleanup_playlist_and_filename(control);
+    if (control->playlist_mode) {
 	        display_message(STATUS, "End of playlist reached");
 	    }
 	    control->stop = 0;
@@ -1492,14 +1234,14 @@ free_names(control->playlist, control->playlist_size, 0);
 	}
         if (control->filename && (!control->current_filename || strcmp(control->filename, control->current_filename) != 0)) {
 safe_cleanup_resources(&file, &handle, NULL, &control->current_filename);
-            free(poll_fds); poll_fds = NULL;
+    free(poll_fds); poll_fds = NULL;
 
     file = open_audio_file(control->filename);
     if (file) {
         struct stat st;
         if (fstat(fileno(file), &st) == 0) {
             long file_size = st.st_size;
-control->duration = (double)file_size / BYTES_PER_SECOND;
+            control->duration = (double)file_size / BYTES_PER_SECOND;
             control->bytes_read = 0LL;
         } else {
             control->duration = 0.0;
@@ -1508,11 +1250,7 @@ control->duration = (double)file_size / BYTES_PER_SECOND;
 
         handle = init_audio_device(rate, channels);
         if (!handle) {
-            if (file) {
-                fclose(file);
-                file = NULL;
-            }
-            free(poll_fds); poll_fds = NULL;
+            safe_cleanup_resources(&file, &handle, &poll_fds, NULL);
             pthread_mutex_unlock(&control->mutex);
             continue;
         }
@@ -1534,7 +1272,7 @@ safe_cleanup_resources(&file, &handle, NULL, NULL);
      }
  }
                 } else {
-safe_cleanup_resources(&file, &handle, NULL, NULL);
+SAFE_FREE(control->filename);
                 }
             } else {
                 free(control->filename);
@@ -1562,74 +1300,75 @@ size_t read_size;
 	if (control->is_silent) {
 	    memset(buffer, 0, buffer_size);
 	    read_size = buffer_size;
-	} else {
-	    read_size = fread(buffer, 1, buffer_size, file);
-	    if (read_size == 0) {
-		        if (feof(file)) {
-		            if (control->playlist_mode && control->current_track < control->playlist_size - 1) {
-safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
-		                control->current_track++;
-control->filename = SAFE_STRDUP(control->playlist[control->current_track]);
-if (!control->filename) {
-		                    control->current_track = control->playlist_size;
-		                }
-		                pthread_mutex_unlock(&control->mutex);
-		                continue;
-		            } else if (control->loop_mode && !control->playlist_mode) {
-		                fseek(file, 0, SEEK_SET);
-                                control->bytes_read = 0LL;
-		                control->seek_delta = 0;
-		                pthread_mutex_unlock(&control->mutex);
-		                continue;
-		            } else {
-		                if (control->playlist_mode) {
-		                    display_message(STATUS, "End of playlist reached");
-		                }
-		                if (control->playlist) {
-free_names(control->playlist, control->playlist_size, 0);
-		                    control->playlist = NULL;
-		                    control->playlist_size = 0;
-		                    control->playlist_capacity = 0;
-		                    free(control->playlist_dir);
-		                    control->playlist_dir = NULL;
-		                }
-		                if (control->filename) {
-                                SAFE_FREE(control->filename);
-		                }
-                                safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
-		                control->playlist_mode = 0;
-		                control->duration = 0.0;
-                                control->bytes_read = 0LL;
-		                pthread_mutex_unlock(&control->mutex);
-		                continue;
-		            }
-		        } else {
-		            display_message(ERROR, "File read error");
-		            if (control->playlist) {
-free_names(control->playlist, control->playlist_size, 0);
-		                control->playlist = NULL;
-		                control->playlist_size = 0;
-		                control->playlist_capacity = 0;
-		                free(control->playlist_dir);
-		                control->playlist_dir = NULL;
-		            }
-		            if (control->filename) {
-		                free(control->filename);
-		                control->filename = NULL;
-		            }
-                            safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
-		            control->playlist_mode = 0;
-		            control->duration = 0.0;
-                            control->bytes_read = 0LL;
-		            pthread_mutex_unlock(&control->mutex);
-		            continue;
-		        }
-	    }
+} else {
+    read_size = fread(buffer, 1, buffer_size, file);
+if (read_size == 0) {
+    if (feof(file)) {
+        if (control->playlist_mode && control->current_track < control->playlist_size - 1) {
+            safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
+            control->current_track++;
+            control->filename = SAFE_STRDUP(control->playlist[control->current_track]);
+            if (!control->filename) {
+                control->current_track = control->playlist_size;
+            }
+            pthread_mutex_unlock(&control->mutex);
+            continue;
+        } else if (control->loop_mode && !control->playlist_mode) {
+            fseek(file, 0, SEEK_SET);
+            control->bytes_read = 0LL;
+            control->seek_delta = 0;
+            pthread_mutex_unlock(&control->mutex);
+            continue;
+        } else {
+            if (control->playlist_mode) {
+                display_message(STATUS, "End of playlist reached");
+            }
+            if (control->playlist) {
+                free_names(control->playlist, control->playlist_size, 0);
+                control->playlist = NULL;
+                control->playlist_size = 0;
+                control->playlist_capacity = 0;
+                free(control->playlist_dir);
+                control->playlist_dir = NULL;
+            }
+            SAFE_FREE(control->filename);
+            safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
+            control->playlist_mode = 0;
+            control->duration = 0.0;
+            control->bytes_read = 0LL;
+            pthread_mutex_unlock(&control->mutex);
+            continue;
+        }
+    } else {
+        display_message(ERROR, "File read error");
+        if (control->playlist) {
+            free_names(control->playlist, control->playlist_size, 0);
+            control->playlist = NULL;
+            control->playlist_size = 0;
+            control->playlist_capacity = 0;
+            free(control->playlist_dir);
+            control->playlist_dir = NULL;
+        }
+        if (control->filename) {
+            free(control->filename);
+            control->filename = NULL;
+        }
+        safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
+        cleanup_playlist_and_filename(control);
+        control->playlist_mode = 0;
+        control->duration = 0.0;
+        control->bytes_read = 0LL;
+        pthread_mutex_unlock(&control->mutex);
+        continue;
+    }
+}
+
 control->bytes_read += (long long)read_size;
-	}
-	pthread_mutex_unlock(&control->mutex);
-int actual_size = (read_size / 4) * 4;
-pthread_mutex_lock(&control->mutex);
+}
+pthread_mutex_unlock(&control->mutex);
+	int actual_size = (read_size / 4) * 4;
+	if (actual_size <= 0) continue;
+	pthread_mutex_lock(&control->mutex);
 if (control->fading_out || control->fading_in) {
     int16_t *samples = (int16_t *)buffer;
     size_t num_samples = actual_size / 2;
@@ -1668,48 +1407,56 @@ play_audio(handle, buffer, actual_size);
         }
     }
     safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
+    cleanup_playlist_and_filename(control);
     return NULL;
 }
+
 void perform_seek(PlayerControl *control, snd_pcm_t *handle)
-	{
-	    if (!control->current_file) {
-	        control->seek_delta = 0;
-	        return;
-	    }
-	    if (control->seek_delta == 0 || !control->current_file)
-	        return;
-            long long seek_bytes = (long long)control->seek_delta * BYTES_PER_SECOND;
-	    long long current_pos = ftell(control->current_file);
-	    long long new_pos = current_pos + seek_bytes;
-	    if (new_pos < 0)
-	        new_pos = 0;
-	    if (control->duration > 0.0) {
-            long long max_bytes = (long long)(control->duration * BYTES_PER_SECOND);
-	        if (new_pos > max_bytes)
-	            new_pos = max_bytes;
-	    }
-	    new_pos = (new_pos / 4) * 4;
-	    long long delta_bytes = new_pos - current_pos;
-	    if (delta_bytes == 0) {
-	        control->seek_delta = 0;
-	        return;
-	    }
-	    fseek(control->current_file, new_pos, SEEK_SET);
-            control->bytes_read = new_pos;
-	    if (handle) {
-	        if (seek_bytes < 0) {
-	            snd_pcm_drop(handle);
-	        }
-	        long long delta_frames = llabs(delta_bytes) / 4;
-	        if (seek_bytes > 0) {
-	            snd_pcm_forward(handle, delta_frames);
-	        } else {
-	            snd_pcm_rewind(handle, delta_frames);
-	        }
-	        snd_pcm_prepare(handle);
-	    }
-	    control->seek_delta = 0;
-	}
+{
+    if (!control->current_file) {
+        control->seek_delta = 0;
+        return;
+    }
+    if (control->seek_delta == 0)
+        return;
+    long long seek_bytes = (long long)control->seek_delta * BYTES_PER_SECOND;
+    long long current_pos = ftell(control->current_file);
+    long long new_pos = current_pos + seek_bytes;
+    if (new_pos < 0)
+        new_pos = 0;
+    long original_pos = ftell(control->current_file);
+    long long file_size = 0;
+    if (fseek(control->current_file, 0, SEEK_END) == 0) {
+        long long file_size = ftell(control->current_file);
+        fseek(control->current_file, original_pos, SEEK_SET);
+        if (new_pos > file_size)
+            new_pos = file_size;
+        control->duration = (double)file_size / BYTES_PER_SECOND;
+    }
+    new_pos = (new_pos / 4) * 4;
+    if (new_pos > file_size)
+        new_pos -= 4;
+    long long delta_bytes = new_pos - current_pos;
+    if (delta_bytes == 0) {
+        control->seek_delta = 0;
+        return;
+    }
+    fseek(control->current_file, new_pos, SEEK_SET);
+    control->bytes_read = new_pos;
+    if (handle) {
+        if (seek_bytes < 0) {
+            snd_pcm_drop(handle);
+        }
+        long long delta_frames = llabs(delta_bytes) / 4;
+        if (seek_bytes > 0) {
+            snd_pcm_forward(handle, delta_frames);
+        } else {
+            snd_pcm_rewind(handle, delta_frames);
+        }
+        snd_pcm_prepare(handle);
+    }
+    control->seek_delta = 0;
+}
 static int playlist_cmp(const void *a, const void *b) {
     const char *path_a = *(const char **)a;
     const char *name_a = strrchr(path_a, '/') ? strrchr(path_a, '/') + 1 : path_a;
@@ -1721,15 +1468,22 @@ static int playlist_cmp(const void *a, const void *b) {
 void load_playlist(const char *dir_path, PlayerControl *control) {
     pthread_mutex_lock(&control->mutex);
     control->stop = 1;
+    control->playlist_mode = 0;
+    pthread_cond_signal(&control->cond);
+    pthread_mutex_unlock(&control->mutex);
+    usleep(100000);
+    show_error = 0;
+    error_msg[0] = '\0';
+    pthread_mutex_lock(&control->mutex);
+    control->stop = 1;
     pthread_cond_signal(&control->cond);
     pthread_mutex_unlock(&control->mutex);
     pthread_mutex_lock(&control->mutex);
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 3;
-
     while (control->stop == 1) {
-        int ret = pthread_cond_timedwait(&control->cond, &control->mutex, &ts);
+        struct timespec ts_wait;
+        clock_gettime(CLOCK_REALTIME, &ts_wait);
+        ts_wait.tv_sec += 1;
+        int ret = pthread_cond_timedwait(&control->cond, &control->mutex, &ts_wait);
         if (ret == ETIMEDOUT) {
             display_message(ERROR, "Warning: audio stream not responding — continuing without waiting");
             break;
@@ -1791,18 +1545,8 @@ void shutdown_player_thread(PlayerControl *control, pthread_t thread, int *have_
                 usleep(100000);
             }
         }
-        if (!joined) {
-double elapsed = (double)control->bytes_read / BYTES_PER_SECOND;
-int hours = (int)elapsed / 3600;
-int mins = ((int)elapsed % 3600) / 60;
-int secs = (int)elapsed % 60;
-            fprintf(stderr, "\033[31mWARNING: Audio thread did not finish in 3s — interrupted at %02d:%02d:%02d — leaving it (safer than pthread_cancel)\033[0m\n", hours, mins, secs);
-            fflush(stderr);
-            usleep(1000000);
-        }
-    } else {
-        pthread_join(thread, NULL);
-    }
+        if (!joined){fflush(stderr);}
+    } else {pthread_join(thread, NULL);}
 }
 void action_p(PlayerControl *control)
 {
@@ -1823,24 +1567,153 @@ void action_p(PlayerControl *control)
         display_message(STATUS, "PAUSED (fading out)");
     }
 }
-void action_f(PlayerControl *control) {
+
+void action_seek(PlayerControl *control, int delta, const char *msg_if_none) {
     if (control->current_file) {
-        control->seek_delta = 10;
+        control->seek_delta = delta;
     } else {
-        display_message(STATUS, "Nothing to fast-forward");
+        display_message(STATUS, "%s", msg_if_none);
     }
 }
-void action_b(PlayerControl *control) {
-    if (control->current_file) {
-        control->seek_delta = -10;
-    } else {
-        display_message(STATUS, "Nothing to rewind");
+
+void action_n(PlayerControl *control) {
+    if (!control) return;
+    pthread_mutex_lock(&control->mutex);
+    if (!control->current_file && !control->filename) {
+        pthread_mutex_unlock(&control->mutex);
+        display_message(STATUS, "Ничего не воспроизводится");
+        return;
     }
+    char *current_file = NULL;
+    if (control->current_filename) {
+        char *slash = strrchr(control->current_filename, '/');
+        current_file = safe_strdup(slash ? slash + 1 : control->current_filename);
+    } else if (control->filename) {
+        char *slash = strrchr(control->filename, '/');
+        current_file = safe_strdup(slash ? slash + 1 : control->filename);
+    }
+    char *current_full = control->filename ? safe_strdup(control->filename) : NULL;
+    pthread_mutex_unlock(&control->mutex);
+    if (!current_file) {
+        display_message(ERROR, "Не могу определить текущий файл");
+        SAFE_FREE(current_full);
+        return;
+    }
+    char dir_path[PATH_MAX];
+    if (current_full && strchr(current_full, '/')) {
+        char *path_copy = safe_strdup(current_full);
+        if (path_copy) {
+            char *dir = dirname(path_copy);
+            strncpy(dir_path, dir, sizeof(dir_path)-1);
+            free(path_copy);
+        } else {
+            strncpy(dir_path, current_dir, sizeof(dir_path)-1);
+        }
+    } else {
+        strncpy(dir_path, current_dir, sizeof(dir_path)-1);
+    }
+    dir_path[sizeof(dir_path)-1] = '\0';
+    int file_count = 0;
+    char **files = NULL;
+    if (scan_directory(dir_path, 1, (void **)&files, &file_count, 1) != 0 || file_count == 0) {
+        display_message(ERROR, "Нет RAW файлов в %s", dir_path);
+        SAFE_FREE(current_file);
+        SAFE_FREE(current_full);
+        return;
+    }
+    qsort(files, file_count, sizeof(char *), playlist_cmp);
+    int current_idx = -1;
+    for (int i = 0; i < file_count; i++) {
+        char *full_path = files[i];
+        char *slash = strrchr(full_path, '/');
+        char *name_in_list = slash ? slash + 1 : full_path;
+        if (name_in_list && current_file && strcmp(name_in_list, current_file) == 0) {
+            current_idx = i;
+            break;
+        }
+    }
+    int next_idx;
+    if (current_idx == -1) {
+        display_message(STATUS, "Файл '%s' не найден, начинаю с первого", current_file);
+        next_idx = 0;
+    } else if (current_idx < file_count - 1) {
+        next_idx = current_idx + 1;
+    } else {
+        pthread_mutex_lock(&control->mutex);
+        int loop = control->loop_mode;
+        pthread_mutex_unlock(&control->mutex);
+        if (loop) {
+            next_idx = 0;
+            display_message(STATUS, "Начало списка (цикл)");
+        } else {
+            display_message(STATUS, "Конец списка файлов");
+            free_names(files, file_count, 0);
+            SAFE_FREE(current_file);
+            SAFE_FREE(current_full);
+            return;
+        }
+    }
+    if (next_idx < 0 || next_idx >= file_count) {
+        display_message(ERROR, "Ошибка: некорректный индекс %d", next_idx);
+        free_names(files, file_count, 0);
+        SAFE_FREE(current_file);
+        SAFE_FREE(current_full);
+        return;
+    }
+    char *next_full_path = safe_strdup(files[next_idx]);
+    if (!next_full_path) {
+        display_message(ERROR, "Не хватает памяти для пути");
+        free_names(files, file_count, 0);
+        SAFE_FREE(current_file);
+        SAFE_FREE(current_full);
+        return;
+    }
+    char *slash = strrchr(next_full_path, '/');
+    char *next_basename = safe_strdup(slash ? slash + 1 : next_full_path);
+    if (!next_basename) {
+        display_message(ERROR, "Не хватает памяти для имени");
+        free(next_full_path);
+        free_names(files, file_count, 0);
+        SAFE_FREE(current_file);
+        SAFE_FREE(current_full);
+        return;
+    }
+    pthread_mutex_lock(&control->mutex);
+    control->stop = 1;
+    pthread_cond_signal(&control->cond);
+    pthread_mutex_unlock(&control->mutex);
+    struct timespec ts = {0, 50000000};
+    nanosleep(&ts, NULL);
+    pthread_mutex_lock(&control->mutex);
+    SAFE_FREE(control->filename);
+    control->filename = next_full_path;
+    SAFE_FREE(control->current_filename);
+    control->current_filename = next_basename;
+    if (control->playlist) {
+        free_names(control->playlist, control->playlist_size, 0);
+    }
+    control->playlist = files;
+    control->playlist_size = file_count;
+    control->playlist_capacity = file_count;
+    control->playlist_mode = 1;
+    SAFE_FREE(control->playlist_dir);
+    control->playlist_dir = safe_strdup(dir_path);
+    control->current_track = next_idx;
+    reset_playback_fields(control);
+    control->stop = 0;
+    pthread_cond_signal(&control->cond);
+    pthread_mutex_unlock(&control->mutex);
+    SAFE_FREE(current_file);
+    SAFE_FREE(current_full);
+    display_message(STATUS, "Следующий: %s", next_basename);
 }
+
 void action_s(PlayerControl *control) {
     control->stop = 1;
     control->duration = 0.0;
     control->bytes_read = 0LL;
+    show_error = 0;
+    error_msg[0] = '\0';
     if (control->current_filename) {
         free(control->current_filename);
         control->current_filename = NULL;
@@ -1850,21 +1723,69 @@ void action_s(PlayerControl *control) {
     control->current_track = 0;
     display_message(STATUS, "Playback stopped");
 }
+
 void lock_and_signal(PlayerControl *control, void (*action)(PlayerControl *)) {
     pthread_mutex_lock(&control->mutex);
     if (action) action(control);
     pthread_cond_signal(&control->cond);
     pthread_mutex_unlock(&control->mutex);
 }
-void with_player_control_lock(void (*action)(PlayerControl *)) {
-    lock_and_signal(&player_control, action);
+
+void lock_and_signal_seek(PlayerControl *control, int delta, const char *msg) {
+    pthread_mutex_lock(&control->mutex);
+    action_seek(control, delta, msg);
+    pthread_cond_signal(&control->cond);
+    pthread_mutex_unlock(&control->mutex);
 }
+
 static void start_playback(const char *full_path, const char *file_name, int enable_loop) {
     if (!full_path || !file_name) return;
-
+    show_error = 0;
+    error_msg[0] = '\0';
+    struct stat st;
+    if (stat(full_path, &st) == 0) {
+        if (st.st_size == 0) {
+            display_message(ERROR, "File '%s' is empty (0 bytes)", file_name);
+            return;
+        }
+	if (st.st_size < 4) {
+	    display_message(ERROR, "File '%s' too small for a single frame (%ld bytes < 4)", file_name, st.st_size);
+	    return;
+	}
+	if (st.st_size % 4 != 0) {
+	    display_message(ERROR,
+	        "File '%s': size %ld bytes not multiple of 4. "
+	        "Required: stereo 16-bit RAW (2ch × 2bytes = 4bytes/frame)",
+	        file_name, st.st_size);
+	    return;
+	}
+    FILE *temp_file = fopen(full_path, "rb");
+    if (!temp_file) {
+        display_message(ERROR, "Failed to open for validation: %s", file_name);
+        return;
+    }
+    char header[4] = {0};
+    size_t read = fread(header, 1, 4, temp_file);
+    fclose(temp_file);
+    if (read >= 4) {
+        if (memcmp(header, "RIFF", 4) == 0 || memcmp(header, "OggS", 4) == 0 || 
+            memcmp(header, "fLaC", 4) == 0 || memcmp(header, "FORM", 4) == 0) {
+            display_message(ERROR, "File '%s' appears to be formatted audio (e.g., WAV/OGG/FLAC/AIFF), not raw PCM", file_name);
+            return;
+        }
+    }
+        if (st.st_size < 1024) {
+            display_message(STATUS,
+                "File '%s' is very small (%ld bytes). Playback may be short.",
+                file_name, st.st_size);
+        }
+    } else {
+        display_message(ERROR, "Cannot access file: %s", file_name);
+        return;
+    }
     pthread_mutex_lock(&player_control.mutex);
     if (player_control.filename) free(player_control.filename);
-	    player_control.filename = safe_strdup(full_path);
+    player_control.filename = safe_strdup(full_path);
     if (!player_control.filename) {
         display_message(STATUS, "Out of memory! Cannot play file.");
         pthread_mutex_unlock(&player_control.mutex);
@@ -1876,7 +1797,7 @@ static void start_playback(const char *full_path, const char *file_name, int ena
     pthread_cond_signal(&player_control.cond);
 
     if (player_control.current_filename) free(player_control.current_filename);
-	    player_control.current_filename = safe_strdup(file_name);
+    player_control.current_filename = safe_strdup(file_name);
     if (enable_loop) {
         display_message(STATUS, "Playback started in loop mode on new file");
     }
@@ -1898,8 +1819,21 @@ int navigate_dir(const char *target_dir, char *status_buf)
         status_buf[0] = '\0';
         return 0;
     } else {
-    display_message(ERROR, "Access denied to: %s", target_dir);
+   display_message(ERROR, ACCESS_DENIED_MSG, target_dir);
         return -1;
+    }
+}
+
+static int is_different_file = 0;
+static const char *selected_file_name_for_loop = NULL;
+static void check_different_file(PlayerControl *control) {
+    is_different_file = 0;
+    selected_file_name_for_loop = NULL;
+    if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name &&
+        !file_list[selected_index].is_dir && is_raw_file(file_list[selected_index].name)) {
+        selected_file_name_for_loop = file_list[selected_index].name;
+        is_different_file = selected_file_name_for_loop &&
+            (!control->current_filename || strcmp(control->current_filename, selected_file_name_for_loop) != 0);
     }
 }
 
@@ -1916,7 +1850,6 @@ int navigate_and_play(void) {
 
     if (term_width < MIN_WIDTH || term_height < MIN_HEIGHT) {
         endwin();
-fprintf(stderr, "\033[31mTerminal too small! Minimum: %dx%d\033[0m\n", MIN_WIDTH, MIN_HEIGHT);
         return -1;
     }
     list_win = newwin(term_height - 2, INNER_WIDTH, 1, 1);
@@ -2068,7 +2001,7 @@ display_message(STATUS, "No forward history");
 	                } else {
                     int dir_fd = openat(AT_FDCWD, file_list[selected_index].name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
     if (dir_fd == -1) {
-        display_message(ERROR, "Access denied to: %s/%s", current_dir, file_list[selected_index].name);
+display_message(ERROR, ACCESS_DENIED_MSG, xasprintf("%s/%s", current_dir, file_list[selected_index].name));
         break;
     }
     struct stat st;
@@ -2078,7 +2011,7 @@ display_message(STATUS, "No forward history");
         break;
     }
     if (fchdir(dir_fd) != 0) {
-        display_message(ERROR, "Access denied to: %s/%s", current_dir, file_list[selected_index].name);
+display_message(ERROR, ACCESS_DENIED_MSG, xasprintf("%s/%s", current_dir, file_list[selected_index].name));
         close(dir_fd);
         break;
     }
@@ -2111,16 +2044,16 @@ display_message(STATUS, "Path too long, fallback to old dir");
 	            }
 	            break;
 case 'p': case 'P':
-with_player_control_lock(action_p);
+lock_and_signal(&player_control, action_p);
 break;
 case 'f':
-with_player_control_lock(action_f);
-break;
+    lock_and_signal_seek(&player_control, 10, "Nothing to fast-forward");
+    break;
 case 'b':
-with_player_control_lock(action_b);
-break;
-case 's': case 'S':
-with_player_control_lock(action_s);
+    lock_and_signal_seek(&player_control, -10, "Nothing to rewind");
+    break;
+case 's':
+lock_and_signal(&player_control, action_s);
 break;
 		case 'h': case 'H':
 		{
@@ -2188,6 +2121,7 @@ if (!full_path) {
 	            display_message(STATUS, "Select a directory for playlist!");
 	    }
 	    break;
+
 case 'a': case 'A':
     load_playlist(current_dir, &player_control);
     if (player_control.playlist_size == 0) {
@@ -2205,27 +2139,17 @@ player_control.current_filename = SAFE_STRDUP(basename(player_control.playlist[0
         pthread_mutex_unlock(&player_control.mutex);
     }
     break;
-case 'l': case 'L':
-    const char *selected_file_name = NULL;
-int is_different_file = 0;
-void check_different_file(PlayerControl *control) {
-if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name &&
-!file_list[selected_index].is_dir && is_raw_file(file_list[selected_index].name)) {
-selected_file_name = file_list[selected_index].name;
-}
-is_different_file = selected_file_name &&
-(!control->current_filename || strcmp(control->current_filename, selected_file_name) != 0);
-}
-with_player_control_lock(check_different_file);
 
-if (is_different_file) {
-char *full_path = xasprintf("%s/%s", current_dir, selected_file_name);
-if (full_path) {
-    start_playback(full_path, selected_file_name, 1);
-    free(full_path);
-} else {
-    display_message(STATUS, "Out of memory! Cannot play file.");
-}
+case 'l': case 'L':
+    lock_and_signal(&player_control, check_different_file);
+    if (is_different_file && selected_file_name_for_loop) {
+        char *full_path = xasprintf("%s/%s", current_dir, selected_file_name_for_loop);
+        if (full_path) {
+            start_playback(full_path, selected_file_name_for_loop, 1);
+            free(full_path);
+        } else {
+            display_message(STATUS, "Out of memory! Cannot play file.");
+        }
     } else {
         pthread_mutex_lock(&player_control.mutex);
         if (player_control.current_file) {
@@ -2236,13 +2160,17 @@ if (full_path) {
         }
         pthread_mutex_unlock(&player_control.mutex);
     }
-break;
+    break;
+case 'n':
+    pthread_mutex_lock(&player_control.mutex);
+    action_n(&player_control);
+    pthread_mutex_unlock(&player_control.mutex);
+    break;
 case 'c':
     path_visual_offset = (path_visual_offset - 5 > 0) ? path_visual_offset - 5 : 0;
     break;
 case 'e':
     path_visual_offset += 5;
-    break;
     break;
 }
 }
@@ -2276,23 +2204,77 @@ if (pthread_create(thread, NULL, func, arg) == 0) {
     return 0;
 }
 
+static void handle_program_exit(
+    int result,
+    int was_playing,
+    int hours,
+    int mins,
+    int secs
+) {
+    if (result == 0) {
+        endwin_and_clear_screen();
+
+        if (was_playing) {
+            printf(
+                "\033[31mWARNING: Audio thread did not finish in 3s — "
+                "interrupted at %02d:%02d:%02d — "
+                "leaving it (safer than pthread_cancel)\033[0m\n",
+                hours, mins, secs
+            );
+        } else {
+            printf(" END\n");
+        }
+    } else {
+        printf(
+            "\033[31m Terminal too small! Minimum: %dx%d\033[0m\n",
+            MIN_WIDTH, MIN_HEIGHT
+        );
+    }
+}
+
+static int handle_initial_directory(int argc, char *argv[]) {
+    if (argc > 1) {
+        if (chdir(argv[1]) != 0) {
+            display_message(ERROR, "Failed to change to directory: %s", argv[1]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
-    (void)argc; (void)argv;
+    if (handle_initial_directory(argc, argv) != 0) {return -1;}
+pthread_mutexattr_t attr;
+pthread_mutexattr_init(&attr);
+pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+pthread_mutex_init(&player_control.mutex, &attr);
+pthread_mutexattr_destroy(&attr);
     pthread_t thread = 0;
     int have_player_thread = 0;
     have_player_thread =
     try_start_player_thread(&thread,
                             player_thread,
                             &player_control);
-    int result = navigate_and_play();
-    if (have_player_thread) {
-        shutdown_player_thread(&player_control, thread, &have_player_thread);
-    }
-	with_player_control_lock(cleanup_playlist);
-    if (have_player_thread) {
-        pthread_mutex_destroy(&player_control.mutex);
-        pthread_cond_destroy(&player_control.cond);
-    }
-    return result;
+int result = navigate_and_play();
+pthread_mutex_lock(&player_control.mutex);
+bool was_playing = (player_control.current_filename != NULL);
+double elapsed = 0.0;
+if (was_playing) {
+    elapsed = (double)player_control.bytes_read / BYTES_PER_SECOND;
 }
-// 2298
+int hours = (int)elapsed / 3600;
+int mins = ((int)elapsed % 3600) / 60;
+int secs = (int)elapsed % 60;
+pthread_mutex_unlock(&player_control.mutex);
+if (have_player_thread) {
+    shutdown_player_thread(&player_control, thread, &have_player_thread);
+}
+lock_and_signal(&player_control, cleanup_playlist_and_filename);
+if (have_player_thread) {
+    pthread_mutex_destroy(&player_control.mutex);
+    pthread_cond_destroy(&player_control.cond);
+}
+handle_program_exit(result, was_playing, hours, mins, secs);
+return result;
+}
+// 2280
