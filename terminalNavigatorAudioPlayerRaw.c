@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+
 #include <stdarg.h>
 #include <termios.h>
 #include <unistd.h>
@@ -21,8 +22,10 @@
 #include <time.h>
 #include <fcntl.h>
 #include <strings.h>
+#include <math.h>
 
 void draw_file_list(WINDOW *win);
+void draw_field_frame(WINDOW *win);
 
 #define SCROLL_FILLED L'█'
 #define SCROLL_EMPTY L'▒'
@@ -63,6 +66,7 @@ void draw_file_list(WINDOW *win);
 #define COLOR_ATTR_ON(win, attr) wattron(win, COLOR_PAIR(attr))
 #define COLOR_ATTR_OFF(win, attr) wattroff(win, COLOR_PAIR(attr))
 #define ACCESS_DENIED_MSG "Access denied to: %s"
+#define SAFE_MUTEX_LOCK(m) do { int ret = pthread_mutex_lock(m); if (ret != 0) { display_message(ERROR, "Mutex lock failed: %s", strerror(ret)); } } while (0)
 
 void endwin_and_clear_screen(void)
 {
@@ -110,8 +114,18 @@ int convert_to_wchar(const char *src, wchar_t **wsrc_out, size_t *wlen_out) {
         const char *p = src;
         size_t idx = 0;
         while (*p && idx < src_len) {
-            if ((unsigned char)*p <= 127) {
-                wsrc[idx++] = (wchar_t)(unsigned char)*p;
+            unsigned char c = (unsigned char)*p;
+            if (c <= 127) {
+                wsrc[idx++] = (wchar_t)c;
+            } else if (c >= 192 && c <= 223 && p[1] != 0) {
+                wsrc[idx++] = ((c & 0x1F) << 6) | ((unsigned char)p[1] & 0x3F);
+                p++;
+            } else if (c >= 224 && c <= 239 && p[1] != 0 && p[2] != 0) {
+                wsrc[idx++] = ((c & 0x0F) << 12) | (((unsigned char)p[1] & 0x3F) << 6) | ((unsigned char)p[2] & 0x3F);
+                p += 2;
+            } else if (c >= 240 && c <= 247 && p[1] != 0 && p[2] != 0 && p[3] != 0) {
+                wsrc[idx++] = ((c & 0x07) << 18) | (((unsigned char)p[1] & 0x3F) << 12) | (((unsigned char)p[2] & 0x3F) << 6) | ((unsigned char)p[3] & 0x3F);
+                p += 3;
             } else {
                 wsrc[idx++] = L'?';
             }
@@ -124,6 +138,7 @@ int convert_to_wchar(const char *src, wchar_t **wsrc_out, size_t *wlen_out) {
     *wlen_out = wlen;
     return 0;
 }
+
 static int compute_wchar_width(const wchar_t *w, size_t len) {
     int width = 0;
     for (size_t i = 0; i < len; i++) {
@@ -164,8 +179,12 @@ int prepare_display_wstring(const char *src, int max_visual_width, wchar_t *dest
     size_t dest_idx = 0;
     int current_width = 0;
     if (use_middle_ellipsis) {
-        int front_width = remaining_width / 2;
-        int back_width = remaining_width - front_width;
+        int front_width = 0;
+        int back_width = 0;
+        if (remaining_width > 1) {
+            front_width = remaining_width / 2;
+            back_width = remaining_width - front_width;
+        }
 	if (has_wide_chars(wsrc, wlen)) {
 	    if (front_width % 2 != 0) {
 	        front_width--;
@@ -264,6 +283,9 @@ static void check_alloc(void *ptr) {if (!ptr) memory_error();}
 static int is_raw_file(const char *name);
 __attribute__((unused)) static char *xasprintf(const char *fmt, ...);
 static void free_names(void *entries, int count, int is_file_entry);
+static inline int should_skip_entry(const struct dirent *entry, int filter_raw) {
+    return (entry->d_name[0] == '.') || (filter_raw && !is_raw_file(entry->d_name));
+}
 static int scan_directory(const char *dir_path, int filter_raw, void **entries_out, int *count_out, int for_playlist) {
     DIR *dir = opendir(dir_path);
     if (!dir) {
@@ -272,8 +294,7 @@ static int scan_directory(const char *dir_path, int filter_raw, void **entries_o
 struct dirent *entry;
 int count = 0;
 while ((entry = readdir(dir))) {
-    if (entry->d_name[0] == '.') continue;
-    if (filter_raw && !is_raw_file(entry->d_name)) continue;
+if (should_skip_entry(entry, filter_raw)) continue;
     count++;
 }
 rewinddir(dir);
@@ -290,8 +311,7 @@ rewinddir(dir);
     }
 size_t idx = 0;
     while ((entry = readdir(dir))) {
-        if (entry->d_name[0] == '.') continue;
-        if (filter_raw && !is_raw_file(entry->d_name)) continue;
+        if (should_skip_entry(entry, filter_raw)) continue;
         char *name = strdup(entry->d_name);
         if (!name) continue;
         char *full_path = xasprintf("%s/%s", dir_path, entry->d_name);
@@ -329,16 +349,27 @@ if (lstat(full_path, &st) == -1) {
         idx++;
     }
     closedir(dir);
+if (idx == 0) {
+    free(entries);
+    entries = NULL;
+}
     *entries_out = entries;
     *count_out = idx;
     return 0;
 }
+
 static char *safe_strdup(const char *src) {
     if (!src) return NULL;
     char *dup = strdup(src);
     check_alloc(dup);
     return dup;
 }
+// verification!
+static void assign_safe_strdup(char **dest, const char *src) {
+    SAFE_FREE(*dest);
+    *dest = safe_strdup(src);
+}
+// verification!
 static void print_formatted_time(WINDOW *win, int y, int x, int seconds) {
     if (seconds < 0) {
         mvwprintw(win, y, x, "--:--:--");
@@ -351,7 +382,7 @@ static void print_formatted_time(WINDOW *win, int y, int x, int seconds) {
 }
 static void draw_fill_line(WINDOW *win, int start_y, int start_x, int length, const void *symbol, int is_horizontal, int is_wide);
 static void draw_progress_bar(WINDOW *win, int y, int start_x, double percent, int bar_length) {
-    if (percent < 0.0) percent = 0.0;
+    if (percent < 0.0 || isnan(percent)) percent = 0.0;
     if (percent > 100.0) percent = 100.0;
     int filled = (int)((percent / 100.0) * bar_length + 0.5);
     if (filled > bar_length) filled = bar_length;
@@ -423,7 +454,14 @@ static void free_names(void *entries, int count, int is_file_entry) {
     }
     free(entries);
 }
-
+// verification!
+void cleanup_playlist_resources(void *files, int file_count, char *current_file, char *current_full) {
+    if (!files) return;
+    free_names(files, file_count, 0);
+    SAFE_FREE(current_file);
+    SAFE_FREE(current_full);
+}
+// verification!
 void init_ncurses(const char *locale) {
 if (setlocale(LC_ALL, locale) == NULL) {
     fprintf(stderr, "Failed to set locale: %s — fallback to default\n", locale);
@@ -492,12 +530,17 @@ FILE* open_audio_file(const char *filename) {
 display_message(ERROR, "Invalid filename in open_audio_file");
         return NULL;
     }
-    FILE *file = fopen(filename, "rb");
-    if (!file) {
-        display_message(ERROR, "Failed to open file: %s", filename);
-        return NULL;
-    }
-
+int fd = open(filename, O_RDONLY | O_CLOEXEC);
+if (fd == -1) {
+    display_message(ERROR, "Failed to open file: %s", filename);
+    return NULL;
+}
+FILE *file = fdopen(fd, "rb");
+if (!file) {
+    close(fd);
+    display_message(ERROR, "fdopen failed for: %s", filename);
+    return NULL;
+}
     return file;
 }
 
@@ -605,10 +648,7 @@ static void center_title_on_frame(WINDOW *win, int y, int actual_width, const ch
     prepare_display_wstring(title, actual_width - 4, wtitle, sizeof(wtitle) / sizeof(wchar_t), 0, L"..", 0, 0);
     int title_wlen = wcslen(wtitle);
     int title_width = 0;
-    for (int i = 0; i < title_wlen; i++) {
-        int w = wcwidth(wtitle[i]);
-        title_width += (w < 0 ? 1 : w);
-    }
+    title_width = compute_wchar_width(wtitle, title_wlen);
     int title_len = title_width + 4;
     int title_start = (actual_width - title_len) / 2;
     if (title_start < 1) title_start = 1;
@@ -635,10 +675,6 @@ static void draw_single_frame(WINDOW *win, int start_y, int height, const char *
     mvwprintw(win, start_y, 0, "%s", top_left);
     draw_fill_line(win, start_y, 1, actual_width - 2, horizontal, 1, 0);
     mvwprintw(win, start_y, actual_width - 1, "%s", top_right);
-    int title_len = strlen(title) + 4;
-    int title_start = (actual_width - title_len) / 2;
-    if (title_start < 1) title_start = 1;
-    if (title_start + title_len > actual_width - 1) title_start = actual_width - title_len - 1;
     center_title_on_frame(win, start_y, actual_width, title, title_left, title_right);
     draw_fill_line(win, start_y + 1, 0, height - 2, vertical, 0, 0);
     draw_fill_line(win, start_y + 1, actual_width - 1, height - 2, vertical, 0, 0);
@@ -652,10 +688,7 @@ void draw_help_frame(WINDOW *win)
 {
     int max_y;
     getmaxyx(win, max_y, term_width);
-    int offset_y = 3;
-    int usable_height = max_y - offset_y - 3;
-    if (usable_height < 3) usable_height = 3;
-draw_single_frame(win, offset_y, usable_height, "HELP", 0);
+    draw_single_frame(win, 3, max_y - 6, "HELP", 0);
 }
 
 void draw_help(WINDOW *win, int start_index) {
@@ -664,34 +697,45 @@ void draw_help(WINDOW *win, int start_index) {
     clear_rect(win, 3, max_y - 3, 0, 83);
     draw_help_frame(win);
     const char *help_lines[] = {
+    " COMMANDS:",
     " a       load playlist from current directory",
     " b       -10 seconds",
-    " c       scroll path left",
-    " d       from down (downward) — to scroll down similarly.",
-    " e       scroll path right",
     " f       +10 seconds",
-    " h       this help",
+    " h       show help / hide help.",
     " l       toggle loop mode (enable/disable cyclic playback of file)",
+    " n       play next file",
     " p       pause / continue",
-    " The yellow color of the selection bar for files and directories in the list.",
     " q       quit",
     " s       stop",
     " t       time",
-    " u       from up (upward) — to scroll up by one line",
-    "         (or by a page, if visible_help_lines is large).",
-    "         Press any key to return. Return the green selection color",
     "",
     " ↑       move up the list",
     " ↓       move down the list",
     " ←       up one level",
     " →       forward in history",
     "",
+    " Shift ← scroll path left",
+    " Shift → scroll path right",
+    "",
+    " In help mode:",
+    " Shift ↓ scroll help text down.",
+    " Shift ↑ scroll help text up.",
+    "",
     " Enter   enter folder",
     " Enter   play .raw",
-    " The blue color of the selection bar for files and directories in the list.",
-    "",
     " Space   load playlist from folder",
     "",
+    " COLORS:",
+    " Blue",
+    " — color of the selection bar for files and directories in the list.",
+    " Yellow",
+    " — used for the selection bar and status messages when playback is paused.",
+    " Red",
+    " — error messages",
+    " Green",
+    " — highlights the selected file or directory in the list.",
+    "",
+    " FILE REQUIREMENTS:",
     " Only .raw files are played, .raw PCM without header",
     " s16le, 2 channels, 44100 Hz, 16 bits/sample, stereo, little-endian",
     "",
@@ -720,6 +764,9 @@ prepare_display_wstring(line, avail_width, wline, sizeof(wline)/sizeof(wchar_t),
 mvwaddwstr(win, y++, 1, wline);
     }
     wnoutrefresh(win);
+int field_y = max_y - 3;
+    clear_rect(win, field_y, max_y, 0, max_x);
+    draw_field_frame(win);
     doupdate();
 }
 
@@ -777,17 +824,158 @@ static void reset_playback_fields(PlayerControl *control) {
     control->duration = 0.0;
     control->seek_delta = 0;
 }
-PlayerControl player_control;
+// verification!
+void init_playlist_start(PlayerControl *control) {
+    if (!control) return;
+    control->current_track = 0;
+    control->playlist_mode = 1;
+    reset_playback_fields(control);
+    pthread_cond_signal(&control->cond);
+    pthread_mutex_unlock(&control->mutex);
+}
+// verification!
+struct AssignNextData {
+    char *next_full_path;
+    char *next_basename;
+    char **files;
+    int file_count;
+    char *dir_path;
+    int next_idx;
+};
+
+void action_assign_next(PlayerControl *control, void *user_data) {
+    struct AssignNextData *d = user_data;
+    SAFE_FREE(control->filename);
+    control->filename = d->next_full_path;
+    SAFE_FREE(control->current_filename);
+    control->current_filename = d->next_basename;
+    if (control->playlist) {
+        free_names(control->playlist, control->playlist_size, 0);
+    }
+    control->playlist = d->files;
+    control->playlist_size = d->file_count;
+    control->playlist_capacity = d->file_count;
+    control->playlist_mode = 1;
+    SAFE_FREE(control->playlist_dir);
+    assign_safe_strdup(&control->playlist_dir, d->dir_path);
+    control->current_track = d->next_idx;
+    reset_playback_fields(control);
+    control->stop = 0;
+    pthread_cond_signal(&control->cond);
+}
+
+struct StopData {
+    int dummy;
+};
+
+void action_set_stop(PlayerControl *control, void *user_data) {
+(void)user_data;
+control->stop = 1;
+}
+
+void action_set_stop_playlist(PlayerControl *control, void *user_data) {
+(void)user_data;
+control->stop = 1;
+control->playlist_mode = 0;
+}
+
+struct LoadMainData {
+const char *dir_path;
+};
+static int load_raw_files(const char *dir_path, char ***files_out, int *count_out);
+void action_load_main(PlayerControl *control, void *user_data) {
+    struct LoadMainData *d = user_data;
+    while (control->stop == 1) {
+        struct timespec ts_wait;
+        clock_gettime(CLOCK_REALTIME, &ts_wait);
+        ts_wait.tv_sec += 1;
+        int ret = pthread_cond_timedwait(&control->cond, &control->mutex, &ts_wait);
+        if (ret == ETIMEDOUT) {
+            display_message(ERROR, "Warning: audio stream not responding — continuing without waiting");
+            break;
+        }
+    }
+    if (control->playlist) {
+        free_names(control->playlist, control->playlist_size, 0);
+    }
+    control->playlist = NULL;
+    control->playlist_size = 0;
+    control->playlist_capacity = 0;
+    control->current_track = 0;
+    control->playlist_dir = NULL;
+    char **entries = NULL;
+    int count = 0;
+    if (load_raw_files(d->dir_path, &entries, &count) != 0 || count == 0) {
+        if (entries) free(entries);
+        control->playlist_mode = 0;
+        return;
+    }
+    control->playlist = entries;
+    control->playlist_capacity = count;
+    control->playlist_size = count;
+    control->current_track = 0;
+    control->playlist_mode = 1;
+    if (control->playlist_size > 0 && control->playlist[0]) {
+        if (control->filename) free(control->filename);
+        control->filename = strdup(control->playlist[0]);
+        pthread_cond_signal(&control->cond);
+        assign_safe_strdup(&control->playlist_dir, d->dir_path);
+    }
+}
+
+struct LoopData {
+    int loop;
+};
+
+void action_get_loop(PlayerControl *control, void *user_data) {
+    struct LoopData *d = user_data;
+    d->loop = control->loop_mode;
+}
+
+void with_mutex(PlayerControl *control, void (*action)(PlayerControl *, void *), void *user_data, int do_signal) {
+    SAFE_MUTEX_LOCK(&control->mutex);
+    if (action) action(control, user_data);
+    if (do_signal) pthread_cond_signal(&control->cond);
+    pthread_mutex_unlock(&control->mutex);
+}
+
+PlayerControl player_control = {
+    .filename = NULL,
+    .pause = 0,
+    .stop = 0,
+    .quit = 0,
+    .mutex = PTHREAD_MUTEX_INITIALIZER,
+    .cond = PTHREAD_COND_INITIALIZER,
+    .current_file = NULL,
+    .current_filename = NULL,
+    .paused = 0,
+    .loop_mode = 0,
+    .playlist = NULL,
+    .playlist_size = 0,
+    .playlist_capacity = 0,
+    .current_track = 0,
+    .playlist_mode = 0,
+    .seek_delta = 0,
+    .duration = 0.0,
+    .bytes_read = 0LL,
+    .is_silent = 0,
+    .fading_out = 0,
+    .fading_in = 0,
+    .current_fade = FADE_STEPS,
+    .playlist_dir = NULL,
+};
+
 void top(WINDOW *win)
 {
     draw_single_frame(win, 0, 3, "PATH", 0);
     char path_display[256];
     strncpy(path_display, current_dir, sizeof(path_display) - 1);
     path_display[sizeof(path_display) - 1] = '\0';
-	    pthread_mutex_lock(&player_control.mutex);
-	    int is_playlist_active = player_control.playlist_mode &&
-	                             player_control.playlist_dir != NULL &&
-	                             strcmp(player_control.playlist_dir, current_dir) == 0;
+    SAFE_MUTEX_LOCK(&player_control.mutex);
+    int is_playlist_active = player_control.playlist_mode &&
+                             player_control.playlist_dir != NULL &&
+                             (strcmp(player_control.playlist_dir, current_dir) == 0 ||
+                              strstr(player_control.playlist_dir, current_dir) == player_control.playlist_dir);
 	    pthread_mutex_unlock(&player_control.mutex);
     if (is_playlist_active) {
         wattron(win, COLOR_PAIR(COLOR_PAIR_BLUE));
@@ -814,17 +1002,6 @@ void draw_menu_frame(WINDOW *win)
 draw_single_frame(win, 3, usable_height, "FILES & DIRECTORIES", 0);
 }
 void perform_seek(PlayerControl *control, snd_pcm_t *handle);
-PlayerControl player_control = {
-    .filename = NULL, .pause = 0, .stop = 0, .quit = 0,
-    .cond = PTHREAD_COND_INITIALIZER,
-    .current_file = NULL, .current_filename = NULL, .paused = 0,
-    .loop_mode = 0,
-    .playlist = NULL, .playlist_size = 0, .current_track = 0, .playlist_mode = 0,
-    .seek_delta = 0, .duration = 0.0, .bytes_read = 0LL,
-    .is_silent = 0, .fading_out = 0, .fading_in = 0, .current_fade = FADE_STEPS,
-    .playlist_dir = NULL,
-};
-
 static int is_raw_file(const char *name) {
     if (!name) return 0;
     size_t len = strlen(name);
@@ -839,11 +1016,9 @@ static void display_message(int type, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    char temp_msg[256];
-    vsnprintf(temp_msg, sizeof(temp_msg), fmt, ap);
     char *msg = (type == ERROR) ? error_msg : status_msg;
     size_t msg_size = sizeof(error_msg);
-    strncpy(msg, temp_msg, msg_size);
+    vsnprintf(msg, msg_size, fmt, ap);
     if (type == ERROR) {
         show_error = 1;
     } else if (type == STATUS) {
@@ -908,7 +1083,7 @@ prepare_display_wstring(status_msg, status_width, wstatus, sizeof(wstatus)/sizeo
 mvwaddwstr(win, field_y + 1, 2, wstatus);
 wattroff(win, COLOR_PAIR(COLOR_PAIR_YELLOW));
         } else {
-            pthread_mutex_lock(&player_control.mutex);
+SAFE_MUTEX_LOCK(&player_control.mutex);
             double duration = player_control.duration;
 long long bytes_read = player_control.bytes_read;
             pthread_mutex_unlock(&player_control.mutex);
@@ -1034,19 +1209,17 @@ void draw_file_list(WINDOW *win) {
     int visible_lines = (max_y < 12) ? 1 : max_y - 8;
     char *current_file_name = NULL;
     int current_paused = 0;
-
-    pthread_mutex_lock(&player_control.mutex);
+    SAFE_MUTEX_LOCK(&player_control.mutex);
     const char *active_filename = player_control.current_filename;
     if (!active_filename && player_control.filename) {
         active_filename = player_control.filename;
     }
     if (active_filename && strlen(active_filename) > 0) {
         const char *slash = strrchr(active_filename, '/');
-current_file_name = safe_strdup(slash ? slash + 1 : active_filename);
+    assign_safe_strdup(&current_file_name, slash ? slash + 1 : active_filename);
 if (current_file_name) { current_paused = player_control.paused;
 }
 }
-char *playlist_dir = (player_control.playlist_dir) ? strdup(player_control.playlist_dir) : NULL;
    pthread_mutex_unlock(&player_control.mutex);
     int start_index = 0;
     int end_index = file_count;
@@ -1112,15 +1285,20 @@ wchar_t fill_ch1 = L'▒';
 draw_fill_line(win, row, 2, cursor_end - 2, &fill_ch1, 1, 1);
         wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
         int text_color = COLOR_PAIR_BORDER;
-        if (current_file_name && strcmp(file_list[i].name, current_file_name) == 0 && is_raw_file(file_list[i].name))
-            text_color = current_paused ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
-if (file_list[i].is_dir && playlist_dir) {
-    char *full_path = xasprintf("%s/%s", current_dir, file_list[i].name);
-    if (full_path && strcmp(full_path, playlist_dir) == 0) {
-        text_color = COLOR_PAIR_BLUE;
-    }
-    free(full_path);
-}
+        if (file_list[i].is_dir && player_control.playlist_mode && 
+            player_control.playlist_dir) 
+        {
+            char *full_folder_path = xasprintf("%s/%s", current_dir, file_list[i].name);
+            char resolved_path[PATH_MAX];
+            char resolved_playlist_dir[PATH_MAX];
+            if (full_folder_path && 
+                realpath(full_folder_path, resolved_path) != NULL &&
+                realpath(player_control.playlist_dir, resolved_playlist_dir) != NULL &&
+                strcmp(resolved_path, resolved_playlist_dir) == 0) {
+                text_color = COLOR_PAIR_BLUE;
+            }
+            free(full_folder_path);
+        }
         wattron(win, COLOR_PAIR(text_color));
         mvwaddwstr(win, row, 3, wname);
         wattroff(win, COLOR_PAIR(text_color));
@@ -1128,26 +1306,40 @@ if (file_list[i].is_dir && playlist_dir) {
     wchar_t fill_ch2 = L'▒';
 draw_fill_line(win, row, 3 + printed, cursor_end - (3 + printed), &fill_ch2, 1, 1);
         wattroff(win, COLOR_PAIR(COLOR_PAIR_BORDER));
-    } else {
-	        int text_color = 0;
-	        if (current_file_name && strcmp(file_list[i].name, current_file_name) == 0 && is_raw_file(file_list[i].name))
-	            text_color = current_paused ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
-	if (file_list[i].is_dir) text_color = 2;
-	        else if (is_raw_file(file_list[i].name)) text_color = 3;
-	if (file_list[i].is_dir && playlist_dir) {
-	    char *full_path = xasprintf("%s/%s", current_dir, file_list[i].name);
-	    if (full_path && strcmp(full_path, playlist_dir) == 0) {
-	        text_color = COLOR_PAIR_BLUE;
+        } else {
+            int text_color = 0;
+            if (player_control.playlist_mode && 
+                player_control.playlist_dir && 
+                file_list[i].is_dir) 
+            {
+                char *full_folder_path = xasprintf("%s/%s", current_dir, file_list[i].name);
+                char resolved_path[PATH_MAX];
+                char resolved_playlist_dir[PATH_MAX];
+                if (full_folder_path && 
+                    realpath(full_folder_path, resolved_path) != NULL &&
+                    realpath(player_control.playlist_dir, resolved_playlist_dir) != NULL &&
+                    strcmp(resolved_path, resolved_playlist_dir) == 0) {
+                    text_color = COLOR_PAIR_BLUE;
+                }
+                free(full_folder_path);
+            }
+            if (text_color == 0) {
+                if (current_file_name && 
+                    strcmp(file_list[i].name, current_file_name) == 0 && 
+                    is_raw_file(file_list[i].name)) {
+                    text_color = current_paused ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
+                } else if (file_list[i].is_dir) {
+                    text_color = 2;
+                } else if (is_raw_file(file_list[i].name)) {
+                    text_color = 3;
+                }
+            }
+            if (text_color) wattron(win, COLOR_PAIR(text_color));
+            mvwaddwstr(win, row, 3, wname);
+            if (text_color) wattroff(win, COLOR_PAIR(text_color));
+		wchar_t space_ch = L' ';
+		draw_fill_line(win, row, 3 + printed, cursor_end - (3 + printed), &space_ch, 1, 1);
 	    }
-	    free(full_path);
-	}
-	        if (text_color) wattron(win, COLOR_PAIR(text_color));
-	        mvwaddwstr(win, row, 3, wname);
-	        if (text_color) wattroff(win, COLOR_PAIR(text_color));
-
-	wchar_t space_ch = L' ';
-	draw_fill_line(win, row, 3 + printed, cursor_end - (3 + printed), &space_ch, 1, 1);
-    }
 }
     if (file_count > visible_lines) {
         int scroll_height       = max_y - 8;
@@ -1173,9 +1365,7 @@ draw_fill_line(win, 4, bar_x, scroll_height, &empty_char, 0, 1);
 draw_fill_line(win, scroll_pos, bar_x, scroll_bar_height, &fill_char, 0, 1);
 COLOR_ATTR_OFF(win, COLOR_PAIR_BORDER);
     }
-SAFE_FREE(playlist_dir);
 SAFE_FREE(current_file_name);
-
 int last_list_row = end_index - start_index + 4;
 int safe_clear_end = max_y - 5;
 if (last_list_row < safe_clear_end) {
@@ -1291,7 +1481,7 @@ SAFE_FREE(control->filename);
             unsigned short revents;
             snd_pcm_poll_descriptors_revents(handle, poll_fds, poll_count, &revents);
             if (revents & POLLOUT) {
-pthread_mutex_lock(&control->mutex);
+SAFE_MUTEX_LOCK(&control->mutex);
 perform_seek(control, handle);
 pthread_mutex_unlock(&control->mutex);
 
@@ -1457,83 +1647,50 @@ void perform_seek(PlayerControl *control, snd_pcm_t *handle)
     }
     control->seek_delta = 0;
 }
+static const char *get_basename(const char *path) {
+    return strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+}
+
 static int playlist_cmp(const void *a, const void *b) {
     const char *path_a = *(const char **)a;
-    const char *name_a = strrchr(path_a, '/') ? strrchr(path_a, '/') + 1 : path_a;
+    const char *name_a = get_basename(path_a);
     const char *path_b = *(const char **)b;
-    const char *name_b = strrchr(path_b, '/') ? strrchr(path_b, '/') + 1 : path_b;
+    const char *name_b = get_basename(path_b);
     return strcasecmp(name_a, name_b);
 }
 
+static int load_raw_files(const char *dir_path, char ***files_out, int *count_out) {
+    void *entries = NULL;
+    if (scan_directory(dir_path, 1, &entries, count_out, 1) != 0) return -1;
+    if (*count_out == 0) {
+        free(entries);
+        return 0;
+    }
+    if (entries && *count_out > 0) {
+        qsort(entries, *count_out, sizeof(char *), playlist_cmp);
+    }
+    *files_out = (char **)entries;
+    return 0;
+}
+
 void load_playlist(const char *dir_path, PlayerControl *control) {
-    pthread_mutex_lock(&control->mutex);
-    control->stop = 1;
-    control->playlist_mode = 0;
-    pthread_cond_signal(&control->cond);
-    pthread_mutex_unlock(&control->mutex);
+with_mutex(control, action_set_stop_playlist, NULL, 1);
     usleep(100000);
     show_error = 0;
     error_msg[0] = '\0';
-    pthread_mutex_lock(&control->mutex);
-    control->stop = 1;
-    pthread_cond_signal(&control->cond);
-    pthread_mutex_unlock(&control->mutex);
-    pthread_mutex_lock(&control->mutex);
-    while (control->stop == 1) {
-        struct timespec ts_wait;
-        clock_gettime(CLOCK_REALTIME, &ts_wait);
-        ts_wait.tv_sec += 1;
-        int ret = pthread_cond_timedwait(&control->cond, &control->mutex, &ts_wait);
-        if (ret == ETIMEDOUT) {
-            display_message(ERROR, "Warning: audio stream not responding — continuing without waiting");
-            break;
-        }
-    }
-    if (control->playlist) {
-SAFE_FREE(control->playlist_dir);
-control->playlist_dir = NULL;
-SAFE_FREE_ARRAY(control->playlist, control->playlist_size);
-        control->playlist = NULL;
-        control->playlist_size = 0;
-        control->current_track = 0;
-    }
-int count = 0;
-char **entries = NULL;
-if (scan_directory(dir_path, 1, (void **)&entries, &count, 1) != 0) {
-    control->playlist_mode = 0;
-    pthread_mutex_unlock(&control->mutex);
-    return;
-} if (count == 0) {
-    free(entries);
-    control->playlist_mode = 0;
-    pthread_mutex_unlock(&control->mutex);
-    return;
-}
-control->playlist = entries;
-control->playlist_capacity = count;
-control->playlist_size = count;
-qsort(control->playlist, control->playlist_size, sizeof(char *), playlist_cmp);
-control->current_track = 0;
-control->playlist_mode = 1;
-if (control->playlist_size > 0 && control->playlist[0]) {
-    if (control->filename) free(control->filename);
-    control->filename = strdup(control->playlist[0]);
-    pthread_cond_signal(&control->cond);
-    control->playlist_dir = safe_strdup(dir_path);
-}
-pthread_mutex_unlock(&control->mutex);
+with_mutex(control, action_set_stop, NULL, 1);
+struct LoadMainData data = {dir_path};
+with_mutex(control, action_load_main, &data, 0);
 }
 
 void shutdown_player_thread(PlayerControl *control, pthread_t thread, int *have_player_thread) {
     if (!*have_player_thread) return;
     lock_and_signal(control, NULL);
     control->quit = 1;
-
     int has_active_file = 0;
-    pthread_mutex_lock(&control->mutex);
+SAFE_MUTEX_LOCK(&control->mutex);
     has_active_file = (control->current_filename != NULL);
     pthread_mutex_unlock(&control->mutex);
-
     if (has_active_file) {
         int joined = 0;
         time_t start = time(NULL);
@@ -1581,27 +1738,29 @@ void action_n(PlayerControl *control) {
     pthread_mutex_lock(&control->mutex);
     if (!control->current_file && !control->filename) {
         pthread_mutex_unlock(&control->mutex);
-        display_message(STATUS, "Ничего не воспроизводится");
+        display_message(STATUS, "Nothing is playing");
         return;
     }
     char *current_file = NULL;
     if (control->current_filename) {
-        char *slash = strrchr(control->current_filename, '/');
-        current_file = safe_strdup(slash ? slash + 1 : control->current_filename);
+        const char *slash = get_basename(control->current_filename);
+        assign_safe_strdup(&current_file, slash);
     } else if (control->filename) {
-        char *slash = strrchr(control->filename, '/');
-        current_file = safe_strdup(slash ? slash + 1 : control->filename);
+const char *slash = get_basename(control->filename);
+        assign_safe_strdup(&current_file, slash);
     }
-    char *current_full = control->filename ? safe_strdup(control->filename) : NULL;
+    char *current_full = NULL;
+    if (control->filename) assign_safe_strdup(&current_full, control->filename);
     pthread_mutex_unlock(&control->mutex);
     if (!current_file) {
-        display_message(ERROR, "Не могу определить текущий файл");
+        display_message(ERROR, "Cannot determine the current file");
         SAFE_FREE(current_full);
         return;
     }
     char dir_path[PATH_MAX];
     if (current_full && strchr(current_full, '/')) {
-        char *path_copy = safe_strdup(current_full);
+char *path_copy = NULL;
+assign_safe_strdup(&path_copy, current_full);
         if (path_copy) {
             char *dir = dirname(path_copy);
             strncpy(dir_path, dir, sizeof(dir_path)-1);
@@ -1613,20 +1772,18 @@ void action_n(PlayerControl *control) {
         strncpy(dir_path, current_dir, sizeof(dir_path)-1);
     }
     dir_path[sizeof(dir_path)-1] = '\0';
-    int file_count = 0;
-    char **files = NULL;
-    if (scan_directory(dir_path, 1, (void **)&files, &file_count, 1) != 0 || file_count == 0) {
-        display_message(ERROR, "Нет RAW файлов в %s", dir_path);
-        SAFE_FREE(current_file);
-        SAFE_FREE(current_full);
-        return;
-    }
-    qsort(files, file_count, sizeof(char *), playlist_cmp);
+char **files = NULL;
+int file_count = 0;
+if (load_raw_files(dir_path, &files, &file_count) != 0 || file_count == 0) {
+    display_message(ERROR, "No RAW files in %s", dir_path);
+    SAFE_FREE(current_file);
+    SAFE_FREE(current_full);
+    return;
+}
     int current_idx = -1;
     for (int i = 0; i < file_count; i++) {
         char *full_path = files[i];
-        char *slash = strrchr(full_path, '/');
-        char *name_in_list = slash ? slash + 1 : full_path;
+        const char *name_in_list = get_basename(full_path);
         if (name_in_list && current_file && strcmp(name_in_list, current_file) == 0) {
             current_idx = i;
             break;
@@ -1634,78 +1791,52 @@ void action_n(PlayerControl *control) {
     }
     int next_idx;
     if (current_idx == -1) {
-        display_message(STATUS, "Файл '%s' не найден, начинаю с первого", current_file);
+        display_message(STATUS, "File '%s' not found, starting from the first", current_file);
         next_idx = 0;
     } else if (current_idx < file_count - 1) {
         next_idx = current_idx + 1;
     } else {
-        pthread_mutex_lock(&control->mutex);
-        int loop = control->loop_mode;
-        pthread_mutex_unlock(&control->mutex);
+struct LoopData data;
+with_mutex(control, action_get_loop, &data, 0);
+int loop = data.loop;
         if (loop) {
             next_idx = 0;
-            display_message(STATUS, "Начало списка (цикл)");
+            display_message(STATUS, "Beginning of the list (loop)");
         } else {
-            display_message(STATUS, "Конец списка файлов");
-            free_names(files, file_count, 0);
-            SAFE_FREE(current_file);
-            SAFE_FREE(current_full);
+            display_message(STATUS, "End of the file list");
+cleanup_playlist_resources(files, file_count, current_file, current_full);
             return;
         }
     }
     if (next_idx < 0 || next_idx >= file_count) {
-        display_message(ERROR, "Ошибка: некорректный индекс %d", next_idx);
-        free_names(files, file_count, 0);
-        SAFE_FREE(current_file);
-        SAFE_FREE(current_full);
+        display_message(ERROR, "Error: invalid index %d", next_idx);
+cleanup_playlist_resources(files, file_count, current_file, current_full);
         return;
     }
-    char *next_full_path = safe_strdup(files[next_idx]);
-    if (!next_full_path) {
-        display_message(ERROR, "Не хватает памяти для пути");
-        free_names(files, file_count, 0);
-        SAFE_FREE(current_file);
-        SAFE_FREE(current_full);
-        return;
-    }
-    char *slash = strrchr(next_full_path, '/');
-    char *next_basename = safe_strdup(slash ? slash + 1 : next_full_path);
-    if (!next_basename) {
-        display_message(ERROR, "Не хватает памяти для имени");
-        free(next_full_path);
-        free_names(files, file_count, 0);
-        SAFE_FREE(current_file);
-        SAFE_FREE(current_full);
-        return;
-    }
-    pthread_mutex_lock(&control->mutex);
-    control->stop = 1;
-    pthread_cond_signal(&control->cond);
-    pthread_mutex_unlock(&control->mutex);
+char *next_full_path = NULL;
+assign_safe_strdup(&next_full_path, files[next_idx]);
+if (!next_full_path) {
+    display_message(ERROR, "Not enough memory for the path");
+    cleanup_playlist_resources(files, file_count, current_file, current_full);
+    return;
+}
+const char *slash = get_basename(next_full_path);
+char *next_basename = NULL;
+assign_safe_strdup(&next_basename, slash);
+if (!next_basename) {
+    display_message(ERROR, "Not enough memory for the name");
+    free(next_full_path);
+    cleanup_playlist_resources(files, file_count, current_file, current_full);
+    return;
+}
+with_mutex(control, action_set_stop, NULL, 1);
     struct timespec ts = {0, 50000000};
     nanosleep(&ts, NULL);
-    pthread_mutex_lock(&control->mutex);
-    SAFE_FREE(control->filename);
-    control->filename = next_full_path;
-    SAFE_FREE(control->current_filename);
-    control->current_filename = next_basename;
-    if (control->playlist) {
-        free_names(control->playlist, control->playlist_size, 0);
-    }
-    control->playlist = files;
-    control->playlist_size = file_count;
-    control->playlist_capacity = file_count;
-    control->playlist_mode = 1;
-    SAFE_FREE(control->playlist_dir);
-    control->playlist_dir = safe_strdup(dir_path);
-    control->current_track = next_idx;
-    reset_playback_fields(control);
-    control->stop = 0;
-    pthread_cond_signal(&control->cond);
-    pthread_mutex_unlock(&control->mutex);
+struct AssignNextData data = {next_full_path, next_basename, files, file_count, dir_path, next_idx};
+with_mutex(control, action_assign_next, &data, 0);
     SAFE_FREE(current_file);
     SAFE_FREE(current_full);
-    display_message(STATUS, "Следующий: %s", next_basename);
+    display_message(STATUS, "Next: %s", next_basename);
 }
 
 void action_s(PlayerControl *control) {
@@ -1732,7 +1863,7 @@ void lock_and_signal(PlayerControl *control, void (*action)(PlayerControl *)) {
 }
 
 void lock_and_signal_seek(PlayerControl *control, int delta, const char *msg) {
-    pthread_mutex_lock(&control->mutex);
+    SAFE_MUTEX_LOCK(&player_control.mutex);
     action_seek(control, delta, msg);
     pthread_cond_signal(&control->cond);
     pthread_mutex_unlock(&control->mutex);
@@ -1768,7 +1899,7 @@ static void start_playback(const char *full_path, const char *file_name, int ena
     size_t read = fread(header, 1, 4, temp_file);
     fclose(temp_file);
     if (read >= 4) {
-        if (memcmp(header, "RIFF", 4) == 0 || memcmp(header, "OggS", 4) == 0 || 
+        if (memcmp(header, "RIFF", 4) == 0 || memcmp(header, "OggS", 4) == 0 ||
             memcmp(header, "fLaC", 4) == 0 || memcmp(header, "FORM", 4) == 0) {
             display_message(ERROR, "File '%s' appears to be formatted audio (e.g., WAV/OGG/FLAC/AIFF), not raw PCM", file_name);
             return;
@@ -1784,8 +1915,7 @@ static void start_playback(const char *full_path, const char *file_name, int ena
         return;
     }
     pthread_mutex_lock(&player_control.mutex);
-    if (player_control.filename) free(player_control.filename);
-    player_control.filename = safe_strdup(full_path);
+    assign_safe_strdup(&player_control.filename, full_path);
     if (!player_control.filename) {
         display_message(STATUS, "Out of memory! Cannot play file.");
         pthread_mutex_unlock(&player_control.mutex);
@@ -1794,10 +1924,8 @@ static void start_playback(const char *full_path, const char *file_name, int ena
     cleanup_playlist(&player_control);
     player_control.loop_mode = enable_loop;
     reset_playback_fields(&player_control);
+    assign_safe_strdup(&player_control.current_filename, file_name);
     pthread_cond_signal(&player_control.cond);
-
-    if (player_control.current_filename) free(player_control.current_filename);
-    player_control.current_filename = safe_strdup(file_name);
     if (enable_loop) {
         display_message(STATUS, "Playback started in loop mode on new file");
     }
@@ -1810,9 +1938,7 @@ int navigate_dir(const char *target_dir, char *status_buf)
 
     if (chdir(target_dir) == 0) {
         if (getcwd(current_dir, PATH_MAX) == NULL) {
-            display_message(STATUS, "getcwd failed");
-            strncpy(current_dir, target_dir, PATH_MAX - 1);
-            current_dir[PATH_MAX - 1] = '\0';
+            display_message(ERROR, "getcwd failed - path may be too long");
             return -1;
         }
         update_file_list();
@@ -1821,19 +1947,6 @@ int navigate_dir(const char *target_dir, char *status_buf)
     } else {
    display_message(ERROR, ACCESS_DENIED_MSG, target_dir);
         return -1;
-    }
-}
-
-static int is_different_file = 0;
-static const char *selected_file_name_for_loop = NULL;
-static void check_different_file(PlayerControl *control) {
-    is_different_file = 0;
-    selected_file_name_for_loop = NULL;
-    if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name &&
-        !file_list[selected_index].is_dir && is_raw_file(file_list[selected_index].name)) {
-        selected_file_name_for_loop = file_list[selected_index].name;
-        is_different_file = selected_file_name_for_loop &&
-            (!control->current_filename || strcmp(control->current_filename, selected_file_name_for_loop) != 0);
     }
 }
 
@@ -1879,9 +1992,29 @@ if (root_dir[0] != '\0' && root_dir[strlen(root_dir) - 1] != '/') {
     draw_file_list(list_win);
     refresh();
 static int help_mode = 0;
+static int help_start_index = 0;
 int ch;
 	while (1) {
 	    ch = wgetch(list_win);
+if (help_mode) {
+if (ch == KEY_SR) {
+        if (help_start_index > 0)
+            help_start_index--;
+        continue;
+    }
+if (ch == KEY_SF) {
+        int max_y = getmaxy(list_win);
+        int visible_lines = max_y - 6;
+        int help_count = 48;
+        if (help_start_index < help_count - visible_lines)
+            help_start_index++;
+        continue;
+    }
+    if (ch == 'h' || ch == 'H') {
+        help_mode = 0;
+        continue;
+    }
+}
 	if (show_status && (time(NULL) - status_start_time >= STATUS_DURATION_SECONDS)) {
     show_status = 0;
     status_msg[0] = '\0';
@@ -1892,36 +2025,14 @@ int ch;
 	        time_t now = time(NULL);
 	        if (system_time_toggle && now != last_update_time) {
 	            last_update_time = now;
-	        } else {
-pthread_mutex_lock(&player_control.mutex);
-char *current_file_name = NULL;
-char *playlist_dir = player_control.playlist_dir;
-char *active_filename = player_control.current_filename;
-int playlist_mode = player_control.playlist_mode;
-if (active_filename && strlen(active_filename) > 0) {
-    const char *slash = strrchr(active_filename, '/');
-    current_file_name = safe_strdup(slash ? slash + 1 : active_filename);
-}
-pthread_mutex_unlock(&player_control.mutex);
-if (playlist_mode && playlist_dir && strcmp(playlist_dir, current_dir) == 0 && current_file_name) {
-    for (int i = 0; i < file_count; i++) {
-        if (strcmp(file_list[i].name, current_file_name) == 0 && !file_list[i].is_dir) {
-            selected_index = i;
-            break;
-        }
-    }
-}
-if (current_file_name) free(current_file_name);
-draw_file_list(list_win);
-	        }
+		        } else {
+	if (help_mode)
+	    draw_help(list_win, help_start_index);
+	else
+	    draw_file_list(list_win);
+		        }
 	        continue;
     }
-    if (help_mode) {
-        help_mode = 0;
-        update_file_list();
-	        display_message(STATUS, "Back to files — press 'h' for help");
-        continue;
-     }
 	if (ch != 10) {
 	    show_error = 0;
 	    error_msg[0] = '\0';
@@ -1999,7 +2110,7 @@ display_message(STATUS, "No forward history");
                         display_message(ERROR, "Not a .raw file");
                     }
 	                } else {
-                    int dir_fd = openat(AT_FDCWD, file_list[selected_index].name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+   int dir_fd = openat(AT_FDCWD, file_list[selected_index].name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (dir_fd == -1) {
 display_message(ERROR, ACCESS_DENIED_MSG, xasprintf("%s/%s", current_dir, file_list[selected_index].name));
         break;
@@ -2043,133 +2154,96 @@ display_message(STATUS, "Path too long, fallback to old dir");
 	                }
 	            }
 	            break;
-case 'p': case 'P':
+case 'p':
 lock_and_signal(&player_control, action_p);
 break;
 case 'f':
-    lock_and_signal_seek(&player_control, 10, "Nothing to fast-forward");
+case 'b': {
+    int delta = (ch == 'f') ? 10 : -10;
+    const char *msg = (ch == 'f') ? "Nothing to fast-forward" : "Nothing to rewind";
+    lock_and_signal_seek(&player_control, delta, msg);
     break;
-case 'b':
-    lock_and_signal_seek(&player_control, -10, "Nothing to rewind");
-    break;
+}
 case 's':
 lock_and_signal(&player_control, action_s);
 break;
-		case 'h': case 'H':
-		{
-		    int help_start_index = 0;
-		    help_mode = 1;
-	    wtimeout(list_win, 50);
-		    while (help_mode) {
-		        draw_help(list_win, help_start_index);
-		        int ch_help = wgetch(list_win);
-if (ch_help == ERR) continue;
-		        switch (ch_help) {
-		            case 'u': case 'U':
-		                if (help_start_index > 0) help_start_index--;
-		                break;
-		            case 'd': case 'D':
-		                int max_y, max_x;
-		                getmaxyx(list_win, max_y, max_x); (void)max_x;
-		                int visible_lines = max_y - 6;
-		                int help_count = 36;
-		                if (help_start_index < help_count - visible_lines) help_start_index++;
-		                break;
-		            case 'q': case 'Q':
-		                help_mode = 0;
-		                ch = 'q';
-		                break;
-		            default:
-		                help_mode = 0;
-		                break;
-		        }
-		    }
-		    wtimeout(list_win, 50);
-		    help_mode = 0;
-		    draw_file_list(list_win);
-		    display_message(STATUS, "Back to files — press 'h' for help");
-		}
-		break;
-case 't': case 'T':
+case 'h':
+    help_mode = !help_mode;
+    break;
+case 't':
     system_time_toggle = !system_time_toggle;
     error_toggle = 0;
+    if (help_mode) {
+        draw_help(list_win, help_start_index);
+    }
     break;
-	case ' ':
-	    if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name && file_list[selected_index].is_dir) {
-char *full_path = xasprintf("%s/%s", current_dir, file_list[selected_index].name);
-if (!full_path) {
-    display_message(STATUS, "Out of memory!");
-} else {
-	                load_playlist(full_path, &player_control);
-
-	                if (player_control.playlist_size == 0) {
-	                    display_message(ERROR, "Directory does not contain raw files.");
-	                } else {
-	                    pthread_mutex_lock(&player_control.mutex);
-                    SAFE_FREE(player_control.filename);
-                    player_control.filename = SAFE_STRDUP(player_control.playlist[0]);
-                    SAFE_FREE(player_control.current_filename);
-                            free(full_path);
-	                    player_control.current_track = 0;
-	                    player_control.playlist_mode = 1;
-                            reset_playback_fields(&player_control);
-	                    pthread_cond_signal(&player_control.cond);
-	                    pthread_mutex_unlock(&player_control.mutex);
+case ' ':
+    if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name && file_list[selected_index].is_dir) {
+        char *full_path = xasprintf("%s/%s", current_dir, file_list[selected_index].name);
+        if (!full_path) {
+            display_message(STATUS, "Out of memory!");
+        } else {
+            load_playlist(full_path, &player_control);
+            free(full_path);
+            if (player_control.playlist_size == 0) {
+                display_message(ERROR, "Directory does not contain raw files.");
+            } else {
+                display_message(STATUS, "Playlist loaded from %s", file_list[selected_index].name);
             }
-	            }
-	    } else {
-	            display_message(STATUS, "Select a directory for playlist!");
-	    }
-	    break;
-
-case 'a': case 'A':
+        }
+    } else {
+        display_message(STATUS, "Select a directory for playlist!");
+    }
+    break;
+case 'a':
     load_playlist(current_dir, &player_control);
     if (player_control.playlist_size == 0) {
         display_message(ERROR, "No .raw files in current directory.");
     } else {
-        pthread_mutex_lock(&player_control.mutex);
-        SAFE_FREE(player_control.filename);
-player_control.filename = SAFE_STRDUP(player_control.playlist[0]);
-SAFE_FREE(player_control.current_filename);
-player_control.current_filename = SAFE_STRDUP(basename(player_control.playlist[0]));
-        player_control.current_track = 0;
-        player_control.playlist_mode = 1;
-        reset_playback_fields(&player_control);
-        pthread_cond_signal(&player_control.cond);
-        pthread_mutex_unlock(&player_control.mutex);
+        display_message(STATUS, "Playlist loaded from current directory");
     }
     break;
-
-case 'l': case 'L':
-    lock_and_signal(&player_control, check_different_file);
-    if (is_different_file && selected_file_name_for_loop) {
-        char *full_path = xasprintf("%s/%s", current_dir, selected_file_name_for_loop);
-        if (full_path) {
-            start_playback(full_path, selected_file_name_for_loop, 1);
-            free(full_path);
-        } else {
-            display_message(STATUS, "Out of memory! Cannot play file.");
-        }
-    } else {
-        pthread_mutex_lock(&player_control.mutex);
-        if (player_control.current_file) {
-            player_control.loop_mode = !player_control.loop_mode;
-            display_message(STATUS, "%s", player_control.loop_mode ? "Loop mode enabled" : "Loop mode disabled");
-        } else {
-            display_message(STATUS, "Nothing to loop");
-        }
-        pthread_mutex_unlock(&player_control.mutex);
-    }
-    break;
+	case 'l':
+	{
+	    int different = 0;
+	    const char *selected_name = NULL;
+	    pthread_mutex_lock(&player_control.mutex);
+	    if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name &&
+	        !file_list[selected_index].is_dir && is_raw_file(file_list[selected_index].name)) {
+	        selected_name = file_list[selected_index].name;
+	        different = selected_name &&
+	            (!player_control.current_filename || strcmp(player_control.current_filename, selected_name) != 0);
+	    }
+	    pthread_mutex_unlock(&player_control.mutex);
+	    if (different && selected_name) {
+	        char *full_path = xasprintf("%s/%s", current_dir, selected_name);
+	        if (full_path) {
+	            start_playback(full_path, selected_name, 1);
+	            free(full_path);
+	        } else {
+	            display_message(STATUS, "Out of memory! Cannot play file.");
+	        }
+	    } else {
+	        pthread_mutex_lock(&player_control.mutex);
+	        if (player_control.current_file || player_control.filename) {
+	            player_control.loop_mode = !player_control.loop_mode;
+	            display_message(STATUS, "%s", player_control.loop_mode ? "Loop mode enabled" : "Loop mode disabled");
+	        } else {
+	            display_message(STATUS, "Nothing to loop");
+	        }
+	        pthread_mutex_unlock(&player_control.mutex);
+	    }
+	    break;
+	}
 case 'n':
-    pthread_mutex_lock(&player_control.mutex);
+    SAFE_MUTEX_LOCK(&player_control.mutex);
     action_n(&player_control);
     pthread_mutex_unlock(&player_control.mutex);
     break;
-case 'c':
+case KEY_SLEFT:
     path_visual_offset = (path_visual_offset - 5 > 0) ? path_visual_offset - 5 : 0;
     break;
-case 'e':
+case KEY_SRIGHT:
     path_visual_offset += 5;
     break;
 }
@@ -2246,7 +2320,7 @@ int main(int argc, char *argv[]) {
     if (handle_initial_directory(argc, argv) != 0) {return -1;}
 pthread_mutexattr_t attr;
 pthread_mutexattr_init(&attr);
-pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE); // verification!
 pthread_mutex_init(&player_control.mutex, &attr);
 pthread_mutexattr_destroy(&attr);
     pthread_t thread = 0;
@@ -2256,7 +2330,7 @@ pthread_mutexattr_destroy(&attr);
                             player_thread,
                             &player_control);
 int result = navigate_and_play();
-pthread_mutex_lock(&player_control.mutex);
+SAFE_MUTEX_LOCK(&player_control.mutex);
 bool was_playing = (player_control.current_filename != NULL);
 double elapsed = 0.0;
 if (was_playing) {
@@ -2277,4 +2351,4 @@ if (have_player_thread) {
 handle_program_exit(result, was_playing, hours, mins, secs);
 return result;
 }
-// 2280
+// 2354
