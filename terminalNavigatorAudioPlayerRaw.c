@@ -48,7 +48,7 @@ static void play_single_file(void);
 #define COLOR_PAIR_PROGRESS 8
 #define ERROR  1
 #define STATUS 2
-#define FADE_STEPS 24
+#define FADE_STEPS 48
 #define CHANNELS 2
 #define RATE 44100
 #define FRAME_SIZE (CHANNELS * 2)
@@ -341,9 +341,6 @@ static int scan_directory(const char *dir_path, int filter_raw, void **entries_o
             display_message(ERROR, "realpath failed for: %s (errno: %d)", full_path, errno);
             free(full_path);
             free(name);
-            free_names(entries, idx, 0);
-            entries = NULL;
-            *count_out = 0;
             continue;
         }
         free(full_path);
@@ -630,8 +627,8 @@ snd_pcm_t* init_audio_device(unsigned int rate, int channels) {
     }
     snd_pcm_hw_params_t *params;
     snd_pcm_hw_params_alloca(&params);
-    snd_pcm_uframes_t period_size = 256;
-    snd_pcm_uframes_t buffer_size = 1024;
+    snd_pcm_uframes_t period_size = 1024;
+    snd_pcm_uframes_t buffer_size = 4096;
     if (setup_alsa_hw_params(handle, params, &rate, channels, &period_size, &buffer_size) < 0) {
         snd_pcm_close(handle);
         return NULL;
@@ -811,8 +808,41 @@ typedef struct PlayerControl {
     char *playlist_dir;
     int loop_mode;
 } PlayerControl;
+
+static void apply_fade(PlayerControl *ctrl, int fade_dir, char *buffer, int size) {
+    int16_t *samples = (int16_t *)buffer;
+    size_t num_samples = size / 2;
+    float factor_start = (float)ctrl->current_fade / FADE_STEPS;
+    float factor_end;
+    if (fade_dir < 0) {
+        factor_end = (float)(ctrl->current_fade - 1) / FADE_STEPS;
+        if (factor_end < 0) factor_end = 0.0f;
+    } else {
+        factor_end = (float)(ctrl->current_fade + 1) / FADE_STEPS;
+    }
+    for (size_t i = 0; i < num_samples; i++) {
+        float interp = (num_samples > 1) ? (float)i / (num_samples - 1) : 0.0f;
+        float factor = factor_start + (factor_end - factor_start) * interp;
+        samples[i] = (int16_t)(samples[i] * factor);
+    }
+    ctrl->current_fade += fade_dir;
+    if (fade_dir < 0 && ctrl->current_fade <= 0) {
+        ctrl->fading_out = 0;
+        ctrl->current_fade = 0;
+        ctrl->is_silent = 1;
+        if (!ctrl->paused) {
+            ctrl->stop = 1;
+        display_message(STATUS, "Fade completed, stopping");
+        }
+    } else if (fade_dir > 0 && ctrl->current_fade >= FADE_STEPS) {
+        ctrl->fading_in = 0;
+        ctrl->current_fade = FADE_STEPS;
+        ctrl->is_silent = 0;
+    }
+}
+
  void lock_and_signal(PlayerControl *control, void (*action)(PlayerControl *));
-void cleanup_playlist(PlayerControl *control) {
+ void cleanup_playlist(PlayerControl *control) {
     if (!control) return;
     char **old_list = control->playlist;
     int old_size = control->playlist_size;
@@ -840,19 +870,6 @@ static void reset_playback_fields(PlayerControl *control) {
     control->duration = 0.0;
     control->seek_delta = 0;
 }
-
-void init_playlist_start(PlayerControl *control) {
-    if (!control) return;
-    control->current_track = 0;
-    control->playlist_mode = 1;
-    reset_playback_fields(control);
-    pthread_cond_signal(&control->cond);
-    pthread_mutex_unlock(&control->mutex);
-}
-
-struct StopData {
-    int dummy;
-};
 
 void action_set_stop(PlayerControl *control, void *user_data) {
 (void)user_data;
@@ -912,11 +929,6 @@ void action_load_main(PlayerControl *control, void *user_data) {
 struct LoopData {
     int loop;
 };
-
-void action_get_loop(PlayerControl *control, void *user_data) {
-    struct LoopData *d = user_data;
-    d->loop = control->loop_mode;
-}
 
 void with_mutex(PlayerControl *control, void (*action)(PlayerControl *, void *), void *user_data, int do_signal) {
     SAFE_MUTEX_LOCK(&control->mutex);
@@ -995,8 +1007,6 @@ static int is_raw_file(const char *name) {
 }
 	char error_msg[256] = "";
 	static int show_error = 0;
-        static int error_toggle = 0;
-	static int system_time_toggle = 0;
 
 static void display_message(int type, const char *fmt, ...)
 {
@@ -1021,9 +1031,7 @@ void draw_field_frame(WINDOW *win)
     int actual_width = (max_x < FILE_LIST_FIXED_WIDTH) ? max_x : FILE_LIST_FIXED_WIDTH;
     int field_y = max_y - 3;
     const char *title;
-    if (system_time_toggle) {
-        title = "TIME";
-    } else if (show_error || show_status) {
+	    if (show_error || show_status) {
         title = "NOTIFICATION";
     } else {
         title = "PLAYBACK TIME & PROGRESS";
@@ -1038,29 +1046,9 @@ if (ex < 2) ex = 2;
 wattron(win, COLOR_PAIR(COLOR_PAIR_RED));
 mvwaddwstr(win, field_y + 1, ex, werror);
 wattroff(win, COLOR_PAIR(COLOR_PAIR_RED));
-        system_time_toggle = 0;
     } else {
         wattron(win, COLOR_PAIR(COLOR_PAIR_WHITE));
-        if (system_time_toggle) {
-            time_t now = time(NULL);
-            struct tm *tm_info = localtime(&now);
-            const char *months[] = {"January", "February", "March", "April", "May", "June",
-                                    "July", "August", "September", "October", "November", "December"};
-            const char *weekdays[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-            char time_str[128];
-            snprintf(time_str, sizeof(time_str), "%d | %s | %s | %02d | %02d:%02d:%02d",
-                     tm_info->tm_year + 1900,
-                     months[tm_info->tm_mon],
-                     weekdays[tm_info->tm_wday],
-                     tm_info->tm_mday,
-                     tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
-wchar_t wtime[128];
-prepare_display_wstring(time_str, actual_width - 4, wtime, sizeof(wtime)/sizeof(wchar_t), 0, L"..", 0, 0);
-int time_len = wcswidth(wtime, wcslen(wtime));
-int tx = (actual_width - time_len) / 2;
-if (tx < 2) tx = 2;
-mvwaddwstr(win, field_y + 1, tx, wtime);
-        } else if (show_status) {
+ if (show_status) {
             clear_rect(win, field_y + 1, field_y + 2, 2, actual_width - 2);
 wattron(win, COLOR_PAIR(COLOR_PAIR_YELLOW));
 int status_width = actual_width - 4;
@@ -1402,11 +1390,11 @@ void *player_thread(void *arg) {
             pthread_mutex_unlock(&control->mutex);
             break;
         }
-    if (control->stop && !control->fading_out) {
+if (control->stop) {
         safe_cleanup_resources(&file, &handle, &poll_fds, &control->current_filename);
         cleanup_playlist_and_filename(control);
         if (control->playlist_mode) {
-            display_message(STATUS, "Плейлист завершён");
+ display_message(STATUS, "Playlist completed");
         }
         control->stop = 0;
         control->duration = 0.0;
@@ -1443,6 +1431,14 @@ safe_cleanup_resources(&file, &handle, NULL, &control->current_filename);
         control->current_file = file;
         control->current_filename = (control->filename) ? SAFE_STRDUP(control->filename) : NULL;
 if (control->current_filename) {
+long original_pos = ftell(file);
+if (fseek(file, 0, SEEK_END) == 0) {
+    long file_size = ftell(file);
+    fseek(file, original_pos, SEEK_SET);
+    control->duration = (double)file_size / BYTES_PER_SECOND;
+} else {
+    control->duration = 0.0;
+}
                             control->is_silent = 0;
 	                    control->fading_in = 0;
 	                    control->fading_out = 0;
@@ -1457,6 +1453,20 @@ safe_cleanup_resources(&file, &handle, NULL, NULL);
          continue;
      }
  }
+			        char silence_buffer[16384];
+			        memset(silence_buffer, 0, sizeof(silence_buffer));
+			        snd_pcm_sframes_t frames_to_write = sizeof(silence_buffer) / FRAME_SIZE;
+			        snd_pcm_sframes_t written = 0;
+			        while (written < frames_to_write) {
+			            snd_pcm_sframes_t w = snd_pcm_writei(handle,
+			                                                 silence_buffer + written * FRAME_SIZE,
+			                                                 frames_to_write - written);
+			            if (w < 0) {
+			                snd_pcm_recover(handle, w, 1);
+			                continue;
+			            }
+			            written += w;
+			        }
                 } else {
 SAFE_FREE(control->filename);
                 }
@@ -1479,18 +1489,23 @@ SAFE_FREE(control->filename);
             if (revents & POLLOUT) {
 SAFE_MUTEX_LOCK(&control->mutex);
 perform_seek(control, handle);
+    if (control->seek_delta != 0) {
+        usleep(150000);
+        continue;
+    }
 pthread_mutex_unlock(&control->mutex);
 
 size_t read_size;
-	pthread_mutex_lock(&control->mutex);
-	if (control->is_silent) {
-	    memset(buffer, 0, buffer_size);
-	    read_size = buffer_size;
-} else {
-    read_size = fread(buffer, 1, buffer_size, file);
-    if (read_size % 4 != 0) {
-        read_size -= read_size % 4;
-    }
+		pthread_mutex_lock(&control->mutex);
+		if (control->is_silent) {
+		    memset(buffer, 0, buffer_size);
+		    read_size = buffer_size;
+		} else {
+		    read_size = fread(buffer, 1, buffer_size, file);
+		    if (read_size % 4 != 0) {
+		        read_size -= read_size % 4;
+		        if (read_size < 0) read_size = 0;
+		    }
 	if (read_size == 0) {
     if (feof(file)) {
         if (control->playlist_mode && control->current_track < control->playlist_size - 1) {
@@ -1558,39 +1573,10 @@ pthread_mutex_unlock(&control->mutex);
 	int actual_size = (read_size / 4) * 4;
 	if (actual_size <= 0) continue;
 	pthread_mutex_lock(&control->mutex);
-if (control->fading_out || control->fading_in) {
-    int16_t *samples = (int16_t *)buffer;
-    size_t num_samples = actual_size / 2;
-
-    float factor_start = (float)control->current_fade / FADE_STEPS;
-    float factor_end;
-    if (control->fading_out) {
-        factor_end = (float)(control->current_fade - 1) / FADE_STEPS;
-        if (factor_end < 0) factor_end = 0;
-        control->current_fade--;
-        if (control->current_fade <= 0) {
-            control->fading_out = 0;
-            control->is_silent = 1;
-            if (!control->paused) {
-                control->stop = 1;
-                display_message(STATUS, "Затухание завершено, остановка");
-            }
-        }
-    } else {
-        factor_end = (float)(control->current_fade + 1) / FADE_STEPS;
-        control->current_fade++;
-        if (control->current_fade >= FADE_STEPS) {
-            control->fading_in = 0;
-            control->current_fade = FADE_STEPS;
-            control->is_silent = 0;
-        }
-    }
-    for (size_t i = 0; i < num_samples; i++) {
-        float interp = (num_samples > 1) ? (float)i / (num_samples - 1) : 0.0f;
-        float factor = factor_start + (factor_end - factor_start) * interp;
-        samples[i] = (int16_t)(samples[i] * factor);
-    }
-}
+	if (control->fading_out || control->fading_in) {
+	    int dir = control->fading_out ? -1 : 1;
+	    apply_fade(control, dir, buffer, actual_size);
+	}
 pthread_mutex_unlock(&control->mutex);
 play_audio(handle, buffer, actual_size);
             }
@@ -1605,50 +1591,56 @@ play_audio(handle, buffer, actual_size);
 
 void perform_seek(PlayerControl *control, snd_pcm_t *handle)
 {
-    if (!control->current_file) {
+    if (!control->current_file || control->seek_delta == 0) {
         control->seek_delta = 0;
         return;
     }
-    if (control->seek_delta == 0)
-        return;
     long long seek_bytes = (long long)control->seek_delta * BYTES_PER_SECOND;
-    long long current_pos = ftell(control->current_file);
+    pthread_mutex_lock(&control->mutex);
+    long current_pos = ftell(control->current_file);
+    pthread_mutex_unlock(&control->mutex);
     long long new_pos = current_pos + seek_bytes;
-    if (new_pos < 0)
-        new_pos = 0;
+    long file_size = 0;
+    pthread_mutex_lock(&control->mutex);
     long original_pos = ftell(control->current_file);
-    long long file_size = 0;
     if (fseek(control->current_file, 0, SEEK_END) == 0) {
-        long long file_size = ftell(control->current_file);
+        file_size = ftell(control->current_file);
         fseek(control->current_file, original_pos, SEEK_SET);
-        if (new_pos > file_size)
-            new_pos = file_size;
-        control->duration = (double)file_size / BYTES_PER_SECOND;
     }
+    pthread_mutex_unlock(&control->mutex);
+    if (new_pos < 0) new_pos = 0;
+    if (new_pos > file_size) new_pos = file_size;
     new_pos = (new_pos / 4) * 4;
-    if (new_pos > file_size)
-        new_pos -= 4;
-    long long delta_bytes = new_pos - current_pos;
-    if (delta_bytes == 0) {
+    if (new_pos == current_pos) {
         control->seek_delta = 0;
         return;
     }
+    if (handle && !control->is_silent) {
+        control->fading_out = 1;
+        control->current_fade = FADE_STEPS;
+        usleep(50000);
+    }
+    pthread_mutex_lock(&control->mutex);
     fseek(control->current_file, new_pos, SEEK_SET);
     control->bytes_read = new_pos;
     if (handle) {
-        if (seek_bytes < 0) {
-            snd_pcm_drop(handle);
-        }
-        long long delta_frames = llabs(delta_bytes) / 4;
-        if (seek_bytes > 0) {
-            snd_pcm_forward(handle, delta_frames);
-        } else {
-            snd_pcm_rewind(handle, delta_frames);
-        }
+        snd_pcm_drop(handle);
         snd_pcm_prepare(handle);
+        char silence_buffer[8192];
+        memset(silence_buffer, 0, sizeof(silence_buffer));
+        for (int i = 0; i < 3; i++) {
+            snd_pcm_writei(handle, silence_buffer, sizeof(silence_buffer) / FRAME_SIZE);
+        }
     }
+    control->fading_out = 0;
+    control->fading_in = 1;
+    control->current_fade = 0;
+    control->is_silent = 0;
     control->seek_delta = 0;
+    pthread_mutex_unlock(&control->mutex);
+    usleep(100000);
 }
+
 static const char *get_basename(const char *path) {
     return strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
 }
@@ -1724,7 +1716,7 @@ if (has_active_file) {
 void action_p(PlayerControl *control)
 {
     if (!control->current_file) {
-        display_message(STATUS, "Нечего ставить на паузу");
+        display_message(STATUS, "Nothing to pause");
         return;
     }
     if (control->paused) {
@@ -1732,12 +1724,13 @@ void action_p(PlayerControl *control)
         control->is_silent = 0;
         control->fading_in = 1;
         control->current_fade = 0;
-        display_message(STATUS, "ВОЗОБНОВЛЕНО (плавное включение)");
+        control->fading_out = 0;//
+        display_message(STATUS, "RESUMED (smooth fade-in)");
     } else {
         control->paused = 1;
         control->fading_out = 1;
         control->current_fade = FADE_STEPS;
-        display_message(STATUS, "ПАУЗА (плавное выключение)");
+        display_message(STATUS, "PAUSED (smooth fade-out)");
     }
 }
 
@@ -1747,6 +1740,21 @@ void action_seek(PlayerControl *control, int delta, const char *msg_if_none) {
     } else {
         display_message(STATUS, "%s", msg_if_none);
     }
+}
+
+static void fade_in_on_start(void) {
+    SAFE_MUTEX_LOCK(&player_control.mutex);
+    player_control.fading_out = 0;
+    player_control.fading_in = 0;
+    player_control.current_fade = 0;
+    player_control.is_silent = 0;
+    pthread_mutex_unlock(&player_control.mutex);
+    usleep(50000);
+    SAFE_MUTEX_LOCK(&player_control.mutex);
+    player_control.fading_in = 1;
+    player_control.current_fade = 0;
+    pthread_cond_signal(&player_control.cond);
+    pthread_mutex_unlock(&player_control.mutex);
 }
 
 static void play_single_file(void) {
@@ -1785,7 +1793,7 @@ void action_next_prev(PlayerControl *control, int direction) {
     }
     int playing_idx = -1;
     for (int i = 0; i < file_count; i++) {
-        if (file_list[i].name && !file_list[i].is_dir && 
+        if (file_list[i].name && !file_list[i].is_dir &&
             strcmp(file_list[i].name, current_playing) == 0) {
             playing_idx = i;
             break;
@@ -1849,17 +1857,18 @@ void action_next_prev(PlayerControl *control, int direction) {
         display_message(ERROR, "Out of memory");
         return;
     }
+    fade_in_on_start();
     play_single_file();
     display_message(STATUS, "%s: %s", direction == 1 ? "Next" : "Previous", file_list[next_idx].name);
 }
 
 void action_s(PlayerControl *control) {
-    if (control->current_file && control->current_filename && !control->fading_out) {
+    if (control->current_file && control->current_filename && !control->paused) {
         control->fading_out = 1;
         control->current_fade = FADE_STEPS;
         control->is_silent = 0;
         control->stop = 0;
-        display_message(STATUS, "Затухание перед остановкой...");
+        display_message(STATUS, "Fading before stopping...");
     } else {
         control->stop = 1;
         control->duration = 0.0;
@@ -1871,10 +1880,11 @@ void action_s(PlayerControl *control) {
             control->current_filename = NULL;
         }
         control->paused = 0;
+        control->fading_out = 0;
         cleanup_playlist(control);
         control->playlist_mode = 0;
         control->current_track = 0;
-        display_message(STATUS, "Воспроизведение остановлено");
+        display_message(STATUS, "Playback stopped");
     }
 }
 
@@ -1951,17 +1961,21 @@ static void start_playback(const char *full_path, const char *file_name, int ena
     cleanup_playlist(&player_control);
     player_control.loop_mode = enable_loop;
     player_control.paused = 0;
-    player_control.is_silent = 1;
-    player_control.fading_in = 1;
+    player_control.is_silent = 0;
+    player_control.fading_in = 0;
     player_control.fading_out = 0;
-    player_control.current_fade = 0;
+    player_control.current_fade = FADE_STEPS;
     player_control.bytes_read = 0LL;
     player_control.duration = 0.0;
     player_control.seek_delta = 0;
+    pthread_cond_signal(&player_control.cond);
     pthread_mutex_unlock(&player_control.mutex);
     play_single_file();
+    fade_in_on_start();
     if (enable_loop) {
         display_message(STATUS, "Playback started in loop mode on new file");
+    } else {
+        display_message(STATUS, "Playback started (smooth fade-in)");
     }
 }
 
@@ -2054,17 +2068,11 @@ if (show_status && (time(NULL) - status_start_time >= STATUS_DURATION_SECONDS)) 
     draw_file_list(list_win);
 }
 	    if (ch == ERR) {
-	        static time_t last_update_time = 0;
-	        time_t now = time(NULL);
-	        if (system_time_toggle && now != last_update_time) {
-	            last_update_time = now;
-		        } else {
-	if (help_mode)
-	    draw_help(list_win, help_start_index);
-	else
-	    draw_file_list(list_win);
-		        }
-	        continue;
+		        if (help_mode)
+		            draw_help(list_win, help_start_index);
+		        else
+		            draw_file_list(list_win);
+		        continue;
     }
 	if (ch != 10) {
 	    show_error = 0;
@@ -2213,13 +2221,6 @@ break;
 case 'h':
     help_mode = !help_mode;
     break;
-case 't':
-    system_time_toggle = !system_time_toggle;
-    error_toggle = 0;
-    if (help_mode) {
-        draw_help(list_win, help_start_index);
-    }
-    break;
 case ' ':
     if (file_count > 0 && selected_index >= 0 && file_list && file_list[selected_index].name && file_list[selected_index].is_dir) {
         char *full_path = xasprintf("%s/%s", current_dir, file_list[selected_index].name);
@@ -2307,11 +2308,6 @@ refresh_ui();
     return 0;
 }
 
-static void log_player_thread_disabled(void)
-{
-    display_message(ERROR, "pthread_create failed — player disabled");
-}
-
 static int try_start_player_thread(pthread_t *thread,
                                    void *(*func)(void *),
                                    void *arg)
@@ -2319,7 +2315,7 @@ static int try_start_player_thread(pthread_t *thread,
 if (pthread_create(thread, NULL, func, arg) == 0) {
     return 1;
 }
-    log_player_thread_disabled();
+fprintf(stderr, "pthread_create failed — player disabled\n");
     return 0;
 }
 
@@ -2354,7 +2350,7 @@ static void handle_program_exit(
 static int handle_initial_directory(int argc, char *argv[]) {
 	if (argc > 1) {
 	    if (argv[1] == NULL) {
-	        display_message(ERROR, "Invalid directory argument (NULL)");
+fprintf(stderr, "Invalid directory argument (NULL)\n");
 	        return -1;
 	    }
 	    if (chdir(argv[1]) != 0) {
@@ -2376,6 +2372,7 @@ int main(int argc, char *argv[]) {
 pthread_mutexattr_init(&attr);
 pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
 pthread_mutex_init(&player_control.mutex, &attr);
+pthread_cond_init(&player_control.cond, NULL);
 pthread_mutexattr_destroy(&attr);
     pthread_t thread = 0;
     int have_player_thread = 0;
@@ -2405,4 +2402,4 @@ if (have_player_thread) {
 handle_program_exit(result, was_playing, hours, mins, secs);
 return result;
 }
-// 2408
+// 2405 вариант
