@@ -1,0 +1,93 @@
+
+ *** HELP TEXT IN FILE *** | *** ТЕКСТ СПРАВКИ В ФАЙЛЕ ***
+
+ COMMANDS: | КОМАНДЫ:
+
+ f       +10 seconds
+ f       перемотка вперёд на 10 секунд
+
+ b       -10 seconds
+ b       перемотка назад на 10 секунд
+
+ h       show help / hide help.
+ h       показать справку / скрыть справку
+
+ l       toggle loop mode (enable/disable cyclic playback of file)
+ l       переключить режим повтора (включить/выключить циклическое воспроизведение файла)
+
+ n       play next file down
+ n       воспроизвести следующий файл вниз
+
+ N       play next file up
+ N       воспроизвести следующий файл вверх
+
+ p       pause / continue
+ p       пауза / продолжить воспроизведение
+
+ q       quit
+ q       выход из программы
+
+ s       stop
+ s       остановить воспроизведение
+
+ ↑       move up the list
+ ↑       переместиться вверх по списку
+
+ ↓       move down the list
+ ↓       переместиться вниз по списку
+
+ ←       up one level
+ ←       перейти на уровень выше
+
+ →       go back in history
+ →       вернуться назад по истории
+
+ Shift ←  scroll path left
+ Shift ←  прокрутить путь влево
+
+ Shift →  scroll path right
+ Shift →  прокрутить путь вправо
+
+ In help mode: | В режиме справки:
+
+ Shift ↓  scroll help text down.
+ Shift ↓  прокрутить текст справки вниз
+
+ Shift ↑  scroll help text up.
+ Shift ↑  прокрутить текст справки вверх
+
+ Enter   enter folder
+ Enter   войти в папку
+
+ Enter   play .raw
+ Enter   воспроизвести файл .raw
+
+ Space   load playlist from folder
+ Space   загрузить плейлист из папки
+
+ COLORS: | ЦВЕТА:
+
+ Blue — the color of playback for files and directories in the list.
+ Синий — цвет воспроизведения для файлов и каталогов в списке
+
+ Yellow — used for the selection bar and status messages when playback is paused.
+ Жёлтый — используется для полосы выбора и сообщений состояния при паузе воспроизведения
+
+ Red — error messages
+ Красный — сообщения об ошибках
+
+ Green — highlights the selected file or directory in the list.
+ Зелёный — подсвечивает выбранный файл или каталог в списке
+
+ FILE REQUIREMENTS: | ТРЕБОВАНИЯ К ФАЙЛАМ:
+
+ Only .raw files are played, .raw PCM without header
+ Воспроизводятся только файлы .raw, PCM без заголовка
+
+ s16le, 2 channels, 44100 Hz, 16 bits/sample, stereo, little-endian
+ s16le, 2 канала, 44100 Гц, 16 бит на сэмпл, стерео, порядок байтов little-endian
+
+ Пример команды конвертации:
+ ffmpeg -i input.mp3 -f s16le -ac 2 -ar 44100 output.raw
+
+ 我爱中国
